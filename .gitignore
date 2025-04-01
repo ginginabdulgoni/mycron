@@ -1,0 +1,36 @@
+# Laravel (inside mycron/laravel)
+laravel/vendor
+laravel/.env
+laravel/.env.*
+laravel/storage/*.key
+laravel/storage/app/public
+laravel/storage/framework/cache
+laravel/storage/framework/sessions
+laravel/storage/framework/views
+laravel/storage/logs
+laravel/bootstrap/cache/*.php
+
+# Laravel IDE Helper
+laravel/.phpstorm.meta.php
+laravel/_ide_helper.php
+laravel/_ide_helper_models.php
+
+# Node.js (inside mycron/node-worker)
+node-worker/node_modules
+node-worker/.env
+node-worker/*.log
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Composer / NPM lock files (optional, can be versioned if needed)
+laravel/composer.lock
+node-worker/package-lock.json
+node-worker/yarn.lock
