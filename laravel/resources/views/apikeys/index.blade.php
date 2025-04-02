@@ -1,13 +1,12 @@
-<!DOCTYPE html>
-<html>
-
 <head>
-    <title>Manajemen API Key</title>
+
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
 </head>
 
-<body class="p-4">
+@extends('layouts.app')
+@section('title', 'Log Cronjob')
+@section('content')
     <h2 class="mb-4">Manajemen API Key</h2>
     <button class="btn btn-primary mb-3" onclick="openCreateModal()">+ Tambah API Key</button>
 
@@ -73,9 +72,6 @@
         </div>
     </div>
 
-    <!-- Scripts -->
-    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
         $.ajaxSetup({
@@ -115,32 +111,66 @@
             const formData = $(this).serialize();
 
             $.post(url, formData, function(res) {
-                alert(res.message);
-                location.reload();
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Berhasil',
+                    text: res.message,
+                    timer: 2000,
+                    showConfirmButton: false
+                }).then(() => {
+                    location.reload();
+                });
             }).fail(function() {
-                alert('Gagal menyimpan data.');
+                let message = 'Gagal menyimpan data.';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    message = xhr.responseJSON.message;
+                }
+
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Oops!',
+                    text: message
+                });
             });
         });
 
         function deleteApiKey(id) {
-            if (confirm('Yakin mau hapus?')) {
-                $.ajax({
-                    url: `/apikeys/delete/${id}`,
-                    method: 'DELETE',
-                    data: {
-                        _token: $('meta[name="csrf-token"]').attr('content')
-                    },
-                    success: function(res) {
-                        alert(res.message);
-                        $(`#row-${id}`).remove();
-                    },
-                    error: function() {
-                        alert('Gagal menghapus data.');
-                    }
-                });
-            }
+            Swal.fire({
+                title: 'Yakin mau hapus?',
+                text: "Data ini tidak bisa dikembalikan!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Ya, hapus!',
+                cancelButtonText: 'Batal',
+                reverseButtons: true
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    $.ajax({
+                        url: `/apikeys/delete/${id}`,
+                        method: 'DELETE',
+                        data: {
+                            _token: $('meta[name="csrf-token"]').attr('content')
+                        },
+                        success: function(res) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Berhasil',
+                                text: res.message || 'Data berhasil dihapus.',
+                                timer: 2000,
+                                showConfirmButton: false
+                            });
+                            $(`#row-${id}`).remove();
+                        },
+                        error: function() {
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'Gagal',
+                                text: 'Gagal menghapus data.'
+                            });
+                        }
+                    });
+                }
+            });
         }
     </script>
-</body>
-
-</html>
+@endsection

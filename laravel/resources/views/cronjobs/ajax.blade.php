@@ -1,22 +1,26 @@
-<!DOCTYPE html>
-<html>
-
 <head>
-    <title>Manajemen Cronjob</title>
+
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
 </head>
 
-<body class="p-4">
+@extends('layouts.app')
+@section('title', 'Manajemen Cronjob')
+@section('content')
     <h2 class="mb-4">Manajemen Cronjob</h2>
-    <button class="btn btn-primary mb-3" onclick="openCreateModal()">+ Tambah Cronjob</button>
+    <div class="d-flex justify-content-between mb-2">
+        <button class="btn btn-primary" onclick="openCreateModal()">+ Tambah Cronjob</button>
+        <button class="btn btn-danger" onclick="deleteSelected()">🗑️ Hapus Terpilih</button>
+    </div>
 
-    <table class="table table-bordered">
+    <table class="table table-bordered table-striped" id="cronTable">
         <thead>
             <tr>
+                <th><input type="checkbox" id="selectAll"></th>
                 <th>Nama</th>
                 <th>URL</th>
                 <th>Schedule</th>
+                <th>Terakhir Eksekusi</th>
                 <th>Status</th>
                 <th>Aksi</th>
             </tr>
@@ -24,14 +28,17 @@
         <tbody id="cronjobTable">
             @foreach ($cronjobs as $cron)
                 <tr id="row-{{ $cron->id }}">
+                    <td><input type="checkbox" class="select-cron" value="{{ $cron->id }}"></td>
                     <td>{{ $cron->name }}</td>
                     <td>{{ $cron->url }}</td>
                     <td>{{ $cron->schedule }}</td>
+                    <td>
+                        {{ $cron->lastLog?->run_at ? \Illuminate\Support\Carbon::parse($cron->lastLog->run_at)->format('d-m-Y H:i:s') : 'Belum ada' }}
+                    </td>
                     <td>{{ $cron->active ? 'Aktif' : 'Nonaktif' }}</td>
                     <td>
                         <button class="btn btn-sm btn-warning" onclick="editCronjob({{ $cron->id }})">Edit</button>
-                        <button class="btn btn-sm btn-danger"
-                            onclick="deleteCronjob({{ $cron->id }})">Hapus</button>
+                        <button class="btn btn-sm btn-danger" onclick="deleteCronjob({{ $cron->id }})">Hapus</button>
                         <a class="btn btn-sm btn-info" href="{{ route('cronlogs.index', $cron->id) }}">Log</a>
                     </td>
                 </tr>
@@ -86,9 +93,9 @@
         </div>
     </div>
 
-    <!-- Scripts -->
-    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
 
     <script>
         $.ajaxSetup({
@@ -146,7 +153,6 @@
         }
 
         function detectIntervalFromCron(cron) {
-            // Optional enhancement: parse back to interval_value + interval_type (basic only)
             const parts = cron.split(' ');
             if (cron.startsWith('*/')) {
                 $('#interval_value').val(parts[0].replace('*/', ''));
@@ -168,32 +174,114 @@
             const formData = $(this).serialize();
 
             $.post(url, formData, function(res) {
-                alert(res.message);
-                location.reload();
-            }).fail(function() {
-                alert('Gagal menyimpan data.');
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Berhasil',
+                    text: res.message,
+                    timer: 2000,
+                    showConfirmButton: false
+                }).then(() => {
+                    location.reload();
+                });
+            }).fail(function(xhr) {
+                let message = 'Gagal menyimpan data.';
+                if (xhr.responseJSON?.message) message = xhr.responseJSON.message;
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Oops!',
+                    text: message
+                });
             });
         });
 
         function deleteCronjob(id) {
-            if (confirm('Yakin mau hapus?')) {
-                $.ajax({
-                    url: `/cronjobs/delete/${id}`,
-                    method: 'DELETE',
-                    data: {
-                        _token: $('meta[name="csrf-token"]').attr('content')
-                    },
-                    success: function(res) {
-                        alert(res.message);
-                        $(`#row-${id}`).remove();
-                    },
-                    error: function() {
-                        alert('Gagal menghapus data.');
-                    }
-                });
-            }
+            Swal.fire({
+                title: 'Yakin mau hapus?',
+                text: "Data ini tidak bisa dikembalikan!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Ya, hapus!',
+                cancelButtonText: 'Batal',
+                reverseButtons: true
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    $.ajax({
+                        url: `/cronjobs/delete/${id}`,
+                        method: 'DELETE',
+                        data: {
+                            _token: $('meta[name="csrf-token"]').attr('content')
+                        },
+                        success: function(res) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Berhasil',
+                                text: res.message || 'Data berhasil dihapus.',
+                                timer: 1500,
+                                showConfirmButton: false
+                            });
+                            $(`#row-${id}`).remove();
+                        },
+                        error: function() {
+                            Swal.fire({
+                                icon: 'error',
+                                title: 'Gagal',
+                                text: 'Gagal menghapus data.'
+                            });
+                        }
+                    });
+                }
+            });
         }
-    </script>
-</body>
 
-</html>
+        function deleteSelected() {
+            const selected = $('.select-cron:checked').map(function() {
+                return this.value
+            }).get();
+            if (selected.length === 0) {
+                Swal.fire('Oops', 'Pilih data terlebih dahulu.', 'info');
+                return;
+            }
+
+            Swal.fire({
+                title: 'Yakin mau hapus semua yang dipilih?',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Ya, hapus!',
+                cancelButtonText: 'Batal'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    $.ajax({
+                        url: `/cronjobs/bulk-delete`,
+                        method: 'POST',
+                        data: {
+                            _token: $('meta[name="csrf-token"]').attr('content'),
+                            ids: selected
+                        },
+                        success: function(res) {
+                            selected.forEach(id => $(`#row-${id}`).remove());
+                            Swal.fire('Berhasil', res.message || 'Data berhasil dihapus.', 'success');
+                        },
+                        error: function() {
+                            Swal.fire('Gagal', 'Terjadi kesalahan saat menghapus.', 'error');
+                        }
+                    });
+                }
+            });
+        }
+
+        $(document).ready(function() {
+            $('#cronTable').DataTable({
+                language: {
+                    emptyTable: "Belum ada data tersedia"
+                },
+                order: [
+                    [1, 'asc']
+                ]
+            });
+
+            $('#selectAll').on('change', function() {
+                $('.select-cron').prop('checked', this.checked);
+            });
+        });
+    </script>
+@endsection

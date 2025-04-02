@@ -9,7 +9,8 @@ class CronjobController extends Controller
 {
     public function index()
     {
-        $cronjobs = Cronjob::latest()->get();
+
+        $cronjobs = Cronjob::with('lastLog')->get();
         return view('cronjobs.ajax', compact('cronjobs'));
     }
 
@@ -57,5 +58,20 @@ class CronjobController extends Controller
     {
         Cronjob::destroy($id);
         return response()->json(['status' => 'success', 'message' => 'Cronjob deleted']);
+    }
+
+    public function bulkDelete(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array',
+            'ids.*' => 'integer|exists:cronjobs,id',
+        ]);
+
+        $deleted = Cronjob::whereIn('id', $request->ids)->delete();
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "$deleted cronjob berhasil dihapus."
+        ]);
     }
 }
