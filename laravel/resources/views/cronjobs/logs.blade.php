@@ -13,42 +13,50 @@
     </div>
     <a href="{{ route('cronjobs.index') }}" class="btn btn-secondary btn-sm mb-3">← Kembali ke Cronjob</a>
 
-    <table class="table table-bordered table-striped" id="logTable">
+    <table id="logTable" class="table table-bordered table-striped">
         <thead>
             <tr>
                 <th>Waktu</th>
                 <th>Status</th>
                 <th>Response</th>
+                <th>Response Body</th>
             </tr>
         </thead>
         <tbody>
-            @foreach ($cronjob->logs->sortByDesc('run_at') as $log)
+            @foreach ($logs as $log)
                 <tr>
                     <td>{{ \Carbon\Carbon::parse($log->run_at)->format('d-m-Y H:i:s') }}</td>
                     <td>{{ ucfirst($log->status) }}</td>
                     <td>{{ $log->response }}</td>
+                    <td>
+                        <pre style="white-space: pre-wrap; max-height: 150px; overflow:auto;">{{ $log->response_body }}</pre>
+                    </td>
                 </tr>
             @endforeach
         </tbody>
-
     </table>
 
-    {{-- CDN DataTables --}}
-    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
-    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
-    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+    <div class="mt-3">
+        {{ $logs->links() }}
+    </div>
+
+    <!-- Tambahkan DataTables -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.4.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
 
     <script>
         $(document).ready(function() {
             $('#logTable').DataTable({
-                order: [
-                    [0, 'desc']
-                ],
-                language: {
-                    emptyTable: "Belum ada log tersedia"
-                }
+                "paging": true,
+                "lengthChange": true, // ✅ Tampilkan dropdown "Show entries"
+                "lengthMenu": [10, 25, 50, 100],
+                "ordering": true,
+                "info": true,
+                "autoWidth": false
             });
-
         });
     </script>
+
 @endsection

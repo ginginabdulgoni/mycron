@@ -106,14 +106,16 @@ Tabel yang digunakan:
 
 ## 📄 Lisensi
 
-Proyek ini dikembangkan oleh [SDP (Sebelas Dua Belas Project)](https://mywifi.web.id) untuk keperluan internal dan klien mitra. Silakan gunakan untuk kebutuhan pengembangan dan integrasi sistem Anda.
+Proyek ini dikembangkan oleh [SDP (Sebelas Dua Belas Project)](https://mywifi.web.id) dan [1112 Project](https://1112-project.com) untuk keperluan internal dan klien mitra. Silakan gunakan untuk kebutuhan pengembangan dan integrasi sistem Anda.
 
 ---
 
-## ✨ Kontribusi
+### Dukungan
 
-Pull request dan feedback sangat diterima. Silakan fork repo ini dan buat branch untuk penyesuaian jika diperlukan.
+Jika Anda merasa proyek ini bermanfaat dan ingin mendukung saya, traktir kopi saya melalui:
+
+* [Trakteer Kopi](https://trakteer.id/ginginabdulgoni/tip)
+* [Paypal](https://paypal.me/ginginabdulgoni)
 
 ---
-
 Happy coding! 🚀

@@ -8,9 +8,14 @@ class CronLogController extends Controller
 {
     public function index($id)
     {
-        $cronjob = Cronjob::with('logs')->findOrFail($id);
-        return view('cronjobs.logs', compact('cronjob'));
+        $cronjob = Cronjob::findOrFail($id);
+
+        // Ambil lognya dengan paginate, default 10 entry
+        $logs = $cronjob->logs()->orderByDesc('run_at')->paginate(10);
+
+        return view('cronjobs.logs', compact('cronjob', 'logs'));
     }
+
 
     public function clear($id)
     {

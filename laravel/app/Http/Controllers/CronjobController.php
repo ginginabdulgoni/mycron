@@ -10,26 +10,31 @@ class CronjobController extends Controller
     public function index()
     {
 
-        $cronjobs = Cronjob::with('lastLog')->get();
+        $cronjobs = Cronjob::orderBy('created_at', 'desc')->get();
         return view('cronjobs.ajax', compact('cronjobs'));
     }
 
     public function store(Request $request)
     {
-
         $data = $request->validate([
             'name' => 'required',
             'url' => 'required|url',
             'schedule' => 'required',
             'active' => 'nullable|in:on,1,true',
-
+            'save_logs' => 'nullable|in:on,1,true',
         ]);
 
         $data['active'] = $request->has('active');
-        Cronjob::create($data);
+        $data['save_logs'] = $request->has('save_logs');
 
-        return response()->json(['status' => 'success', 'message' => 'Cronjob created']);
+        Cronjob::updateOrCreate(
+            ['url' => $data['url']], // cari berdasarkan URL
+            $data // update field lainnya
+        );
+
+        return response()->json(['status' => 'success', 'message' => 'Cronjob stored']);
     }
+
 
     public function edit($id)
     {
@@ -43,16 +48,24 @@ class CronjobController extends Controller
 
         $data = $request->validate([
             'name' => 'required',
-            'url' => 'required|url',
+            'url' => 'required|url|unique:cronjobs,url,' . $cron->id,
             'schedule' => 'required',
             'active' => 'nullable|in:on,1,true',
+            'save_logs' => 'nullable|in:on,1,true',
+        ], [
+            'url.unique' => 'URL ini sudah digunakan oleh cronjob lain.',
         ]);
 
-        $data['active'] = $request->has('active');
+        // ✅ Ubah checkbox menjadi 1/0
+        $data['active'] = $request->has('active') ? 1 : 0;
+        $data['save_logs'] = $request->has('save_logs') ? 1 : 0;
+
         $cron->update($data);
 
         return response()->json(['status' => 'success', 'message' => 'Cronjob updated']);
     }
+
+
 
     public function destroy($id)
     {

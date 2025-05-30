@@ -22,6 +22,7 @@
                 <th>Schedule</th>
                 <th>Terakhir Eksekusi</th>
                 <th>Status</th>
+                <th>Simpan Log</th> <!-- ✅ Tambahkan kolom icon -->
                 <th>Aksi</th>
             </tr>
         </thead>
@@ -33,9 +34,16 @@
                     <td>{{ $cron->url }}</td>
                     <td>{{ $cron->schedule }}</td>
                     <td>
-                        {{ $cron->lastLog?->run_at ? \Illuminate\Support\Carbon::parse($cron->lastLog->run_at)->format('d-m-Y H:i:s') : 'Belum ada' }}
+                        {{ $cron->last_run_at ? \Carbon\Carbon::parse($cron->last_run_at)->format('d-m-Y H:i') : 'Belum ada' }}
                     </td>
                     <td>{{ $cron->active ? 'Aktif' : 'Nonaktif' }}</td>
+
+                    <!-- ✅ Kolom icon save_logs -->
+                    <td>
+                        {{ $cron->save_logs ? 'Aktif' : 'Nonaktif' }}
+                    </td>
+
+
                     <td>
                         <button class="btn btn-sm btn-warning" onclick="editCronjob({{ $cron->id }})">Edit</button>
                         <button class="btn btn-sm btn-danger" onclick="deleteCronjob({{ $cron->id }})">Hapus</button>
@@ -45,6 +53,7 @@
             @endforeach
         </tbody>
     </table>
+
 
     <!-- Modal Form Cronjob -->
     <div class="modal fade" id="cronModal" tabindex="-1">
@@ -57,14 +66,17 @@
                     </div>
                     <div class="modal-body">
                         <input type="hidden" name="id" id="cron_id">
+
                         <div class="mb-2">
                             <label>Nama</label>
                             <input type="text" class="form-control" name="name" id="name" required>
                         </div>
+
                         <div class="mb-2">
                             <label>URL</label>
                             <input type="url" class="form-control" name="url" id="url" required>
                         </div>
+
                         <div class="mb-2">
                             <label>Interval</label>
                             <div class="input-group">
@@ -80,16 +92,25 @@
                             </div>
                             <input type="hidden" name="schedule" id="schedule" value="* * * * *">
                         </div>
+
                         <div class="mb-2 form-check">
                             <input type="checkbox" class="form-check-input" name="active" id="active" checked>
                             <label class="form-check-label" for="active">Aktif</label>
                         </div>
+
+                        <!-- ✅ Tambahkan checkbox save_logs -->
+                        <div class="mb-2 form-check">
+                            <input type="checkbox" class="form-check-input" name="save_logs" id="save_logs">
+                            <label class="form-check-label" for="save_logs">Simpan Log</label>
+                        </div>
+
                     </div>
                     <div class="modal-footer">
                         <button type="submit" class="btn btn-primary">Simpan</button>
                     </div>
                 </div>
             </form>
+
         </div>
     </div>
 
@@ -120,6 +141,7 @@
                 $('#url').val(data.url);
                 $('#schedule').val(data.schedule);
                 $('#active').prop('checked', data.active);
+                $('#save_logs').prop('checked', data.save_logs);
                 detectIntervalFromCron(data.schedule);
                 modal.show();
             });

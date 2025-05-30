@@ -3,8 +3,9 @@
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    return view('welcome');
+    return redirect()->route('login');
 });
+
 
 use App\Http\Controllers\CronjobController;
 
@@ -23,6 +24,7 @@ use App\Http\Controllers\CronLogController;
 use App\Http\Controllers\UserAuthController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\DashboardController;
 
 
 Route::get('/login', [UserAuthController::class, 'loginForm'])->name('login');
@@ -32,9 +34,8 @@ Route::get('/register', [UserAuthController::class, 'registerForm']);
 Route::post('/register', [UserAuthController::class, 'register']);
 
 Route::middleware('auth')->group(function () {
-    Route::get('/dashboard', function () {
-        return view('dashboard');
-    });
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+
 
 
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');

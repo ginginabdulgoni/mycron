@@ -13,6 +13,7 @@ return new class extends Migration
             $table->foreignId('cronjob_id')->constrained()->onDelete('cascade');
             $table->string('status'); // success / error
             $table->text('response')->nullable(); // response code / error message
+            $table->longText('response_body')->nullable(); // ✅ Tambahan detail lengkap respon (HTML/JSON/text)
             $table->timestamp('run_at');
             $table->timestamps();
         });

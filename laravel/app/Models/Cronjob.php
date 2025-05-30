@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Cronjob extends Model
 {
-    protected $fillable = ['name', 'url', 'schedule', 'active', 'run_at'];
+    protected $fillable = ['name', 'url', 'schedule', 'active', 'save_logs', 'last_run_at'];
 
     public function logs(): HasMany
     {

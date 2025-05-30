@@ -1,4 +1,5 @@
-<?php 
+<?php
+
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
@@ -14,7 +15,14 @@ class SettingController extends Controller
 
     public function store(Request $request)
     {
-        $data = $request->only(['company_name', 'timezone']);
+        $data = $request->only([
+            'company_name',
+            'timezone',
+            'clear_logs_schedule'
+        ]);
+
+        // Convert checkbox (clear_logs_active) ke 1/0
+        $data['clear_logs_active'] = $request->has('clear_logs_active') ? 1 : 0;
 
         foreach ($data as $key => $value) {
             Setting::updateOrCreate(['key' => $key], ['value' => $value]);

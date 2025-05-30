@@ -29,7 +29,29 @@
                 </select>
             </div>
 
+            <!-- ✅ Tambahkan opsi clear logs -->
+            <div class="mb-3">
+                <div class="form-check">
+                    <input type="checkbox" name="clear_logs_active" id="clear_logs_active" class="form-check-input"
+                        {{ isset($settings['clear_logs_active']) && $settings['clear_logs_active'] ? 'checked' : '' }}>
+                    <label class="form-check-label" for="clear_logs_active">Aktifkan Jadwal Pembersihan Log</label>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label for="clear_logs_schedule" class="form-label">Jadwal Pembersihan Log</label>
+                <select name="clear_logs_schedule" id="clear_logs_schedule" class="form-select">
+                    <option value="1_day" {{ ($settings['clear_logs_schedule'] ?? '') == '1_day' ? 'selected' : '' }}>1
+                        Hari ke belakang</option>
+                    <option value="1_week" {{ ($settings['clear_logs_schedule'] ?? '') == '1_week' ? 'selected' : '' }}>1
+                        Minggu ke belakang</option>
+                    <option value="1_month" {{ ($settings['clear_logs_schedule'] ?? '') == '1_month' ? 'selected' : '' }}>1
+                        Bulan ke belakang</option>
+                </select>
+            </div>
+
             <button type="submit" class="btn btn-primary">Simpan Pengaturan</button>
         </form>
+
     </div>
 @endsection
