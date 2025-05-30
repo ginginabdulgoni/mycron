@@ -102,7 +102,11 @@ function scheduleCron(job) {
     console.log(`[⏱ ${currentTime}] Running: ${job.name}`);
 try {
   const res = await axios.get(job.url);
-
+   // ✅ Update last_run_at di DB
+      await db.query(
+        'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
+        [new Date(), job.id]
+      );
   if (job.save_logs) {
     await db.query(
       'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',

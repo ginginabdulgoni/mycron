@@ -17,7 +17,7 @@ return new class extends Migration
             $table->string('url');
             $table->string('schedule')->default('* * * * *'); // format cron
             $table->boolean('active')->default(true);
-            $table->boolean('save_logs')->default(false);
+            $table->boolean('save_logs')->default(false)->nullable();
             $table->timestamp('last_run_at')->nullable();
             $table->timestamps();
         });
