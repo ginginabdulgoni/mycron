@@ -83,6 +83,8 @@
             @can('admin')
                 <li class="nav-item"><a class="nav-link" href="/apikeys">API Keys</a></li>
                 <li class="nav-item"><a class="nav-link" href="/settings">Settings</a></li>
+                <li class="nav-item"><a class="nav-link" href="/users">Manajemen User</a></li>
+                <li class="nav-item"><a class="nav-link" href="/system-update">Update System</a></li>
             @endcan
 
         </ul>

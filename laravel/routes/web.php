@@ -24,6 +24,8 @@ use App\Http\Controllers\UserAuthController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\UserController;
+use App\Http\Controllers\SystemUpdateController;
 
 
 Route::get('/login', [UserAuthController::class, 'loginForm'])->name('login');
@@ -77,5 +79,17 @@ Route::middleware('auth')->group(function () {
         Route::delete('/rto-domains/{id}', [RtoDomainController::class, 'destroy'])->name('rto-domains.destroy');
         Route::delete('/rto-domains/{id}/delete-cronjobs', [RtoDomainController::class, 'deleteCronjobsByDomain'])->name('rto-domains.delete-cronjobs');
         Route::post('/rto-domains/bulk-delete-cronjobs', [RtoDomainController::class, 'bulkDeleteCronjobs'])->name('rto-domains.bulk-delete-cronjobs');
+
+        // Manajemen User
+        Route::get('/users', [UserController::class, 'index'])->name('users.index');
+        Route::post('/users/store', [UserController::class, 'store'])->name('users.store');
+        Route::get('/users/edit/{id}', [UserController::class, 'edit'])->name('users.edit');
+        Route::post('/users/update/{id}', [UserController::class, 'update'])->name('users.update');
+        Route::delete('/users/delete/{id}', [UserController::class, 'destroy'])->name('users.destroy');
+
+        // Update System
+        Route::get('/system-update', [SystemUpdateController::class, 'index'])->name('system-update.index');
+        Route::get('/system-update/check', [SystemUpdateController::class, 'checkUpdate'])->name('system-update.check');
+        Route::post('/system-update/pull', [SystemUpdateController::class, 'pull'])->name('system-update.pull');
     });
 });
