@@ -50,6 +50,38 @@
                 </select>
             </div>
 
+            <hr class="my-4">
+
+            <!-- Auto-delete RTO Cronjobs -->
+            <h5 class="mb-3">Penghapusan Otomatis Cronjob Domain RTO</h5>
+
+            <div class="mb-3">
+                <div class="form-check">
+                    <input type="checkbox" name="auto_delete_rto_active" id="auto_delete_rto_active" class="form-check-input"
+                        {{ isset($settings['auto_delete_rto_active']) && $settings['auto_delete_rto_active'] ? 'checked' : '' }}>
+                    <label class="form-check-label" for="auto_delete_rto_active">
+                        Aktifkan Penghapusan Otomatis Cronjob untuk Domain RTO
+                    </label>
+                </div>
+                <small class="text-muted">Cronjob akan dihapus otomatis jika domain RTO melebihi batas hari yang ditentukan</small>
+            </div>
+
+            <div class="mb-3">
+                <label for="auto_delete_rto_days" class="form-label">Batas Hari Domain RTO</label>
+                <input type="number" name="auto_delete_rto_days" id="auto_delete_rto_days" class="form-control"
+                    min="1" max="365" value="{{ $settings['auto_delete_rto_days'] ?? 3 }}">
+                <small class="text-muted">Default: 3 hari. Cronjob akan dihapus jika domain RTO sudah melebihi jumlah hari ini.</small>
+            </div>
+
+            <div class="mb-3">
+                <label for="rto_excluded_domains" class="form-label">Domain Dikecualikan dari Pengecekan RTO</label>
+                <textarea name="rto_excluded_domains" id="rto_excluded_domains" class="form-control" rows="3">{{ $settings['rto_excluded_domains'] ?? '' }}</textarea>
+                <small class="text-muted">
+                    Masukkan domain yang ingin dikecualikan dari pengecekan RTO, satu per baris.
+                    Contoh: localhost, 127.0.0.1, example.local
+                </small>
+            </div>
+
             <button type="submit" class="btn btn-primary">Simpan Pengaturan</button>
         </form>
 

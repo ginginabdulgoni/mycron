@@ -25,7 +25,7 @@
         <tbody>
             @foreach ($logs as $log)
                 <tr>
-                    <td>{{ \Carbon\Carbon::parse($log->run_at)->format('d-m-Y H:i:s') }}</td>
+                    <td>{{ \Carbon\Carbon::parse($log->run_at, 'UTC')->timezone($timezone ?? config('app.timezone', 'UTC'))->format('d-m-Y H:i:s') }}</td>
                     <td>{{ ucfirst($log->status) }}</td>
                     <td>{{ $log->response }}</td>
                     <td>

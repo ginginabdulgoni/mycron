@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Cronjob;
+use App\Models\RtoDomain;
 use Illuminate\Http\Request;
 
 class DashboardController extends Controller
@@ -16,7 +17,10 @@ class DashboardController extends Controller
         $totalActive = Cronjob::where('active', 1)->count();
         $totalInactive = Cronjob::where('active', 0)->count();
 
+        // Hitung total domain yang RTO
+        $totalRtoDomains = RtoDomain::count();
+
         // Kirim data ke view
-        return view('dashboard', compact('totalActive', 'totalInactive'));
+        return view('dashboard', compact('totalActive', 'totalInactive', 'totalRtoDomains'));
     }
 }

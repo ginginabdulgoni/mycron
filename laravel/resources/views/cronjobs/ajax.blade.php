@@ -1,7 +1,25 @@
 <head>
-
     <meta name="csrf-token" content="{{ csrf_token() }}">
-
+    <style>
+        /* Highlight row dengan warna merah muda untuk domain RTO */
+        .rto-row {
+            background-color: #ffebee !important;
+        }
+        .rto-row:hover {
+            background-color: #ffcdd2 !important;
+        }
+        .rto-badge {
+            display: inline-block;
+            padding: 0.25em 0.6em;
+            font-size: 0.75rem;
+            font-weight: 700;
+            line-height: 1;
+            color: #fff;
+            background-color: #dc3545;
+            border-radius: 0.25rem;
+            margin-left: 0.5rem;
+        }
+    </style>
 </head>
 
 @extends('layouts.app')
@@ -22,35 +40,12 @@
                 <th>Schedule</th>
                 <th>Terakhir Eksekusi</th>
                 <th>Status</th>
-                <th>Simpan Log</th> <!-- ✅ Tambahkan kolom icon -->
+                <th>Simpan Log</th>
                 <th>Aksi</th>
             </tr>
         </thead>
         <tbody id="cronjobTable">
-            @foreach ($cronjobs as $cron)
-                <tr id="row-{{ $cron->id }}">
-                    <td><input type="checkbox" class="select-cron" value="{{ $cron->id }}"></td>
-                    <td>{{ $cron->name }}</td>
-                    <td>{{ $cron->url }}</td>
-                    <td>{{ $cron->schedule }}</td>
-                    <td>
-                        {{ $cron->last_run_at ? \Carbon\Carbon::parse($cron->last_run_at)->format('d-m-Y H:i') : 'Belum ada' }}
-                    </td>
-                    <td>{{ $cron->active ? 'Aktif' : 'Nonaktif' }}</td>
-
-                    <!-- ✅ Kolom icon save_logs -->
-                    <td>
-                        {{ $cron->save_logs ? 'Aktif' : 'Nonaktif' }}
-                    </td>
-
-
-                    <td>
-                        <button class="btn btn-sm btn-warning" onclick="editCronjob({{ $cron->id }})">Edit</button>
-                        <button class="btn btn-sm btn-danger" onclick="deleteCronjob({{ $cron->id }})">Hapus</button>
-                        <a class="btn btn-sm btn-info" href="{{ route('cronlogs.index', $cron->id) }}">Log</a>
-                    </td>
-                </tr>
-            @endforeach
+            <!-- Data akan diload via AJAX -->
         </tbody>
     </table>
 
@@ -203,7 +198,8 @@
                     timer: 2000,
                     showConfirmButton: false
                 }).then(() => {
-                    location.reload();
+                    modal.hide();
+                    table.ajax.reload(null, false); // Reload DataTable tanpa reset pagination
                 });
             }).fail(function(xhr) {
                 let message = 'Gagal menyimpan data.';
@@ -241,7 +237,7 @@
                                 timer: 1500,
                                 showConfirmButton: false
                             });
-                            $(`#row-${id}`).remove();
+                            table.ajax.reload(null, false);
                         },
                         error: function() {
                             Swal.fire({
@@ -280,8 +276,8 @@
                             ids: selected
                         },
                         success: function(res) {
-                            selected.forEach(id => $(`#row-${id}`).remove());
                             Swal.fire('Berhasil', res.message || 'Data berhasil dihapus.', 'success');
+                            table.ajax.reload(null, false);
                         },
                         error: function() {
                             Swal.fire('Gagal', 'Terjadi kesalahan saat menghapus.', 'error');
@@ -291,14 +287,76 @@
             });
         }
 
+        let table;
+
         $(document).ready(function() {
-            $('#cronTable').DataTable({
-                language: {
-                    emptyTable: "Belum ada data tersedia"
+            table = $('#cronTable').DataTable({
+                processing: true,
+                serverSide: true,
+                ajax: {
+                    url: '{{ route('cronjobs.data') }}',
+                    type: 'GET'
                 },
-                order: [
-                    [1, 'asc']
-                ]
+                columns: [
+                    {
+                        data: 'id',
+                        orderable: false,
+                        searchable: false,
+                        render: function(data, type, row) {
+                            return `<input type="checkbox" class="select-cron" value="${data}">`;
+                        }
+                    },
+                    {
+                        data: 'name',
+                        render: function(data, type, row) {
+                            if (row.is_rto) {
+                                return data + '<span class="rto-badge">RTO</span>';
+                            }
+                            return data;
+                        }
+                    },
+                    { data: 'url' },
+                    { data: 'schedule' },
+                    { data: 'last_run_at' },
+                    { data: 'active' },
+                    { data: 'save_logs' },
+                    {
+                        data: 'id',
+                        orderable: false,
+                        searchable: false,
+                        render: function(data, type, row) {
+                            return `
+                                <button class="btn btn-sm btn-warning" onclick="editCronjob(${data})">Edit</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteCronjob(${data})">Hapus</button>
+                                <a class="btn btn-sm btn-info" href="/cronlogs/${data}">Log</a>
+                            `;
+                        }
+                    }
+                ],
+                rowCallback: function(row, data) {
+                    // Tambahkan class CSS untuk row RTO
+                    if (data.is_rto) {
+                        $(row).addClass('rto-row');
+                    }
+                },
+                language: {
+                    emptyTable: "Belum ada data tersedia",
+                    processing: "Loading...",
+                    search: "Cari:",
+                    lengthMenu: "Tampilkan _MENU_ data",
+                    info: "Menampilkan _START_ sampai _END_ dari _TOTAL_ data",
+                    infoEmpty: "Menampilkan 0 sampai 0 dari 0 data",
+                    infoFiltered: "(disaring dari _MAX_ total data)",
+                    paginate: {
+                        first: "Pertama",
+                        last: "Terakhir",
+                        next: "Selanjutnya",
+                        previous: "Sebelumnya"
+                    }
+                },
+                order: [[1, 'asc']],
+                pageLength: 10,
+                lengthMenu: [[10, 25, 50, 100], [10, 25, 50, 100]]
             });
 
             $('#selectAll').on('change', function() {

@@ -18,8 +18,7 @@ use App\Http\Controllers\ApiKeyController;
 
 
 use App\Http\Controllers\CronLogController;
-
-
+use App\Http\Controllers\RtoDomainController;
 
 use App\Http\Controllers\UserAuthController;
 use App\Http\Controllers\SettingController;
@@ -44,6 +43,7 @@ Route::middleware('auth')->group(function () {
 
 
     Route::get('/cronjobs', [CronjobController::class, 'index'])->name('cronjobs.index');
+    Route::get('/cronjobs/data', [CronjobController::class, 'getData'])->name('cronjobs.data');
     Route::post('/cronjobs/store', [CronjobController::class, 'store'])->name('cronjobs.store');
     Route::post('/cronjobs/update/{id}', [CronjobController::class, 'update'])->name('cronjobs.update');
 
@@ -55,6 +55,9 @@ Route::middleware('auth')->group(function () {
 
     Route::get('/cronlogs/{id}', [CronLogController::class, 'index'])->name('cronlogs.index');
     Route::delete('/cronlogs/{id}/clear', [\App\Http\Controllers\CronLogController::class, 'clear'])->name('cronlogs.clear');
+
+    // RTO Domains
+    Route::get('/rto-domains', [RtoDomainController::class, 'index'])->name('rto-domains.index');
 
     // --- Hanya untuk admin ---
     Route::middleware('can:admin')->group(function () {
@@ -69,5 +72,10 @@ Route::middleware('auth')->group(function () {
 
         Route::delete('/cronjobs/delete/{id}', [CronjobController::class, 'destroy'])->name('cronjobs.destroy');
         Route::post('/cronjobs/bulk-delete', [\App\Http\Controllers\CronjobController::class, 'bulkDelete'])->name('cronjobs.bulk-delete');
+
+        // RTO Domains - Admin only
+        Route::delete('/rto-domains/{id}', [RtoDomainController::class, 'destroy'])->name('rto-domains.destroy');
+        Route::delete('/rto-domains/{id}/delete-cronjobs', [RtoDomainController::class, 'deleteCronjobsByDomain'])->name('rto-domains.delete-cronjobs');
+        Route::post('/rto-domains/bulk-delete-cronjobs', [RtoDomainController::class, 'bulkDeleteCronjobs'])->name('rto-domains.bulk-delete-cronjobs');
     });
 });

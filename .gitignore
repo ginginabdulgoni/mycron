@@ -29,6 +29,7 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.zip
 
 # Composer / NPM lock files (optional, can be versioned if needed)
 laravel/composer.lock

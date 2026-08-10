@@ -34,6 +34,7 @@
 </head>
 
 <body class="d-flex flex-column min-vh-100">
+    @php($navbarTimezone = setting('timezone', config('app.timezone', 'UTC')))
 
     {{-- Navbar --}}
     <nav class="navbar navbar-expand-lg navbar-light bg-light fixed-top">
@@ -45,7 +46,7 @@
                 </span>
 
                 <span class="text-muted small">
-                    Waktu: <span id="current-time"></span>
+                    Waktu (<span id="current-tz">{{ $navbarTimezone }}</span>): <span id="current-time"></span>
                 </span>
             </div>
 
@@ -77,6 +78,7 @@
         <ul class="nav flex-column">
             <li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li>
             <li class="nav-item"><a class="nav-link" href="/cronjobs">Cronjob</a></li>
+            <li class="nav-item"><a class="nav-link" href="/rto-domains">Domain RTO</a></li>
 
             @can('admin')
                 <li class="nav-item"><a class="nav-link" href="/apikeys">API Keys</a></li>
@@ -100,9 +102,20 @@
     </footer>
 
     <script>
+        const appTimezone = @json($navbarTimezone);
+        const timeFormatter = new Intl.DateTimeFormat('id-ID', {
+            timeZone: appTimezone,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+
         function updateTime() {
-            const now = new Date();
-            document.getElementById('current-time').innerText = now.toLocaleString();
+            document.getElementById('current-time').innerText = timeFormatter.format(new Date());
+            document.getElementById('current-tz').innerText = appTimezone;
         }
         setInterval(updateTime, 1000);
         updateTime();

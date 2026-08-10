@@ -12,8 +12,9 @@ class CronLogController extends Controller
 
         // Ambil lognya dengan paginate, default 10 entry
         $logs = $cronjob->logs()->orderByDesc('run_at')->paginate(10);
+        $timezone = setting('timezone', config('app.timezone', 'UTC'));
 
-        return view('cronjobs.logs', compact('cronjob', 'logs'));
+        return view('cronjobs.logs', compact('cronjob', 'logs', 'timezone'));
     }
 
 
