@@ -3,8 +3,19 @@ const db = require('./db');
 const axios = require('axios');
 const ping = require('ping');
 const { URL } = require('url');
+const dns = require('dns');
+const http = require('http');
+const https = require('https');
 // p-limit is ESM-only; require returns the module namespace, so grab the default export
 const pLimit = require('p-limit').default;
+const VERBOSE_LOGS = process.env.VERBOSE_CRON_LOGS === '1';
+const originalLog = console.log;
+console.log = (...args) => {
+  const msg = String(args[0] || '');
+  if (VERBOSE_LOGS || /^([❌⚠️🚀✅ Cron Worker|🌍|🧹|🗑️]|Skipping overlap)/.test(msg)) {
+    originalLog(...args);
+  }
+};
 
 // Default fallback
 process.env.TZ = 'UTC';
@@ -12,7 +23,70 @@ let appTimezone = 'UTC';
 let timezoneFallbackWarned = false;
 
 // Concurrency limiter for per-minute jobs
-const minuteLimit = pLimit(10); // Max 10 concurrent jobs for per-minute schedules
+const minuteLimit = pLimit(20); // Max 20 concurrent jobs for per-minute schedules
+
+// DNS cache untuk request job.
+// dns.lookup() default memakai threadpool libuv (4 thread) + resolv.conf glibc. Saat
+// nameserver pertama sering timeout, ribuan lookup antre di 4 thread itu dan SEMUA job
+// kena "timeout of 15000ms exceeded" tanpa pernah membuka koneksi TCP.
+// Di sini pakai c-ares (dns.Resolver, async, tidak memakai threadpool) + cache per host.
+const DNS_TTL_MS = 5 * 60 * 1000;
+const DNS_NEGATIVE_TTL_MS = 60 * 1000;
+const dnsCache = new Map(); // host -> { address, family, error, expires }
+const dnsInflight = new Map(); // host -> Promise
+const resolver = new dns.promises.Resolver({ timeout: 2000, tries: 2 });
+const dnsServers = (process.env.CRON_DNS_SERVERS || '1.1.1.1,8.8.8.8,8.8.4.4')
+  .split(',').map(s => s.trim()).filter(Boolean);
+resolver.setServers(dnsServers);
+
+async function resolveHost(hostname) {
+  const cached = dnsCache.get(hostname);
+  if (cached && cached.expires > Date.now()) {
+    if (cached.error) throw cached.error;
+    return cached;
+  }
+  if (dnsInflight.has(hostname)) return dnsInflight.get(hostname);
+
+  const p = (async () => {
+    try {
+      const addrs = await resolver.resolve4(hostname);
+      const entry = { address: addrs[0], family: 4, expires: Date.now() + DNS_TTL_MS };
+      dnsCache.set(hostname, entry);
+      return entry;
+    } catch (err) {
+      // Fallback ke resolver sistem (mis. /etc/hosts atau host lokal)
+      try {
+        const r = await dns.promises.lookup(hostname, { family: 4 });
+        const entry = { address: r.address, family: 4, expires: Date.now() + DNS_TTL_MS };
+        dnsCache.set(hostname, entry);
+        return entry;
+      } catch (lookupErr) {
+        dnsCache.set(hostname, { error: lookupErr, expires: Date.now() + DNS_NEGATIVE_TTL_MS });
+        throw lookupErr;
+      }
+    } finally {
+      dnsInflight.delete(hostname);
+    }
+  })();
+  dnsInflight.set(hostname, p);
+  return p;
+}
+
+function cachedLookup(hostname, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = {};
+  }
+  resolveHost(hostname)
+    .then(({ address, family }) => {
+      if (options && options.all) return callback(null, [{ address, family }]);
+      callback(null, address, family);
+    })
+    .catch(err => callback(err));
+}
+
+const jobHttpAgent = new http.Agent({ lookup: cachedLookup });
+const jobHttpsAgent = new https.Agent({ lookup: cachedLookup });
 
 async function setTimezoneFromDatabase() {
   try {
@@ -107,7 +181,9 @@ async function checkDomainHTTP(domain) {
     for (const protocol of protocols) {
       try {
         const response = await axios.head(`${protocol}${domain}`, {
-          timeout: 5000,
+          timeout: 3000,
+          httpAgent: jobHttpAgent,
+          httpsAgent: jobHttpsAgent,
           maxRedirects: 3,
           validateStatus: function (status) {
             return status < 500; // Accept anything except 5xx errors
@@ -130,7 +206,7 @@ async function pingDomain(domain) {
   try {
     // First try ICMP ping
     const res = await ping.promise.probe(domain, {
-      timeout: 5,
+      timeout: 2,
       extra: ['-c', '2']
     });
 
@@ -299,10 +375,11 @@ async function autoDeleteRTOCronjobs() {
 }
 
 const scheduledTasks = {};
+const runningJobs = new Set();
 
 async function loadCronJobs() {
  const [rows] = await db.query(`
-  SELECT * FROM cronjobs
+  SELECT * FROM cronjobs 
   WHERE active = 1
   ORDER BY (last_run_at IS NULL) DESC, RAND()
 `);
@@ -334,7 +411,15 @@ async function loadCronJobs() {
 
 function scheduleCron(job) {
   const task = cron.schedule(job.schedule, async () => {
-    const currentTime = new Intl.DateTimeFormat('id-ID', {
+    const lockKey = String(job.id);
+    if (runningJobs.has(lockKey)) {
+      console.log(`Skipping overlap: ${job.name}`);
+      return;
+    }
+    runningJobs.add(lockKey);
+
+    try {
+      const currentTime = new Intl.DateTimeFormat('id-ID', {
       timeZone: process.env.TZ,
       year: 'numeric',
       month: '2-digit',
@@ -352,7 +437,9 @@ function scheduleCron(job) {
       try {
         // Add timeout to axios request (30 seconds)
         const res = await axios.get(job.url, {
-          timeout: 30000,
+          timeout: 15000,
+          httpAgent: jobHttpAgent,
+          httpsAgent: jobHttpsAgent,
           maxRedirects: 5,
           validateStatus: function (status) {
             return status >= 200 && status < 500; // Accept 2xx, 3xx, 4xx
@@ -394,10 +481,13 @@ function scheduleCron(job) {
     };
 
     // Use concurrency limiter for per-minute jobs
-    if (job.schedule === '* * * * *') {
-      await minuteLimit(executeJob);
-    } else {
-      await executeJob();
+      if (job.schedule === '* * * * *' || job.schedule === '*/1 * * * *') {
+        await minuteLimit(executeJob);
+      } else {
+        await executeJob();
+      }
+    } finally {
+      runningJobs.delete(lockKey);
     }
   });
 
@@ -429,7 +519,7 @@ setInterval(async () => {
 // Check domain health every 10 minutes
 setInterval(async () => {
   await checkAndUpdateRTODomains();
-}, 600000);
+}, 3600000);
 
 // Auto-delete RTO cronjobs every hour
 setInterval(async () => {
