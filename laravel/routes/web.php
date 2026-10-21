@@ -89,7 +89,8 @@ Route::middleware('auth')->group(function () {
 
         // Update System
         Route::get('/system-update', [SystemUpdateController::class, 'index'])->name('system-update.index');
+        Route::get('/system-update/status', [SystemUpdateController::class, 'status'])->name('system-update.status');
         Route::get('/system-update/check', [SystemUpdateController::class, 'checkUpdate'])->name('system-update.check');
-        Route::post('/system-update/pull', [SystemUpdateController::class, 'pull'])->name('system-update.pull');
+        Route::post('/system-update/request', [SystemUpdateController::class, 'enqueue'])->name('system-update.request');
     });
 });

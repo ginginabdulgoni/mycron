@@ -8,6 +8,7 @@ const http = require('http');
 const https = require('https');
 // p-limit is ESM-only; require returns the module namespace, so grab the default export
 const pLimit = require('p-limit').default;
+const system = require('./system');
 const VERBOSE_LOGS = process.env.VERBOSE_CRON_LOGS === '1';
 const originalLog = console.log;
 console.log = (...args) => {
@@ -377,6 +378,11 @@ async function autoDeleteRTOCronjobs() {
 const scheduledTasks = {};
 const runningJobs = new Set();
 
+// Tanda tangan job: kalau salah satu field ini berubah, job dijadwalkan ulang.
+function jobSignature(job) {
+  return [job.schedule, job.url, job.name, job.save_logs ? 1 : 0].join('|');
+}
+
 async function loadCronJobs() {
  const [rows] = await db.query(`
   SELECT * FROM cronjobs 
@@ -389,7 +395,7 @@ async function loadCronJobs() {
     const existing = scheduledTasks[job.id];
 
     if (existing) {
-      if (existing.schedule !== job.schedule) {
+      if (existing.signature !== jobSignature(job)) {
         console.log(`🔁 Rescheduling ${job.name}`);
         existing.task.stop();
         scheduleCron(job);
@@ -493,7 +499,8 @@ function scheduleCron(job) {
 
   scheduledTasks[job.id] = {
     task,
-    schedule: job.schedule
+    schedule: job.schedule,
+    signature: jobSignature(job)
   };
 
   console.log(`✅ Scheduled: ${job.name} [${job.schedule}]`);
@@ -508,9 +515,33 @@ function scheduleCron(job) {
   await checkAndUpdateRTODomains();    // 🔍 Check domain health
   await autoDeleteRTOCronjobs();       // 🗑️ Auto-delete old RTO cronjobs
   console.log('✅ Cron Worker initialized successfully');
+  await system.start({
+    reloadCronJobs: loadCronJobs,
+    jobCount: () => Object.keys(scheduledTasks).length,
+  });
 })();
 
-// Reload cronjobs and clear logs every hour
+// Deteksi cronjob baru/diubah/dihapus tanpa perlu restart worker.
+// Query ringan tiap 15 detik; daftar job hanya dimuat ulang bila sidik jarinya berubah.
+// (last_run_at diupdate via SQL mentah sehingga tidak menyentuh updated_at.)
+let cronFingerprint = null;
+setInterval(async () => {
+  try {
+    const [rows] = await db.query(
+      'SELECT COUNT(*) AS n, COALESCE(SUM(id), 0) AS ids, MAX(updated_at) AS updated FROM cronjobs WHERE active = 1'
+    );
+    const fp = `${rows[0].n}|${rows[0].ids}|${rows[0].updated ? new Date(rows[0].updated).getTime() : 0}`;
+    if (cronFingerprint !== null && fp !== cronFingerprint) {
+      console.log('✅ Perubahan cronjob terdeteksi, memuat ulang daftar job...');
+      await loadCronJobs();
+    }
+    cronFingerprint = fp;
+  } catch (err) {
+    console.error('❌ Cek perubahan cronjob gagal:', err.message);
+  }
+}, 15000);
+
+// Reload penuh tiap jam sebagai jaring pengaman + clear logs
 setInterval(async () => {
   await loadCronJobs();
   await clearOldLogsIfEnabled();
