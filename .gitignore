@@ -4,10 +4,6 @@ laravel/.env
 laravel/.env.*
 laravel/storage/*.key
 laravel/storage/app/public
-laravel/storage/framework/cache
-laravel/storage/framework/sessions
-laravel/storage/framework/views
-laravel/storage/logs
 laravel/bootstrap/cache/*.php
 
 # Laravel IDE Helper

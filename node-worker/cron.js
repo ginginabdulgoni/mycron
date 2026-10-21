@@ -688,14 +688,17 @@ async function sweepUnexecutedAndOverdueJobs() {
 
 // Deteksi cronjob baru/diubah/dihapus tanpa perlu restart worker.
 // Query ringan tiap 15 detik; daftar job hanya dimuat ulang bila sidik jarinya berubah.
-// (last_run_at diupdate via SQL mentah sehingga tidak menyentuh updated_at.)
+// Sidik jari dari ISI job (bukan updated_at: kolom itu diisi dengan zona waktu campuran
+// sehingga MAX(updated_at) tidak selalu bergeser saat satu job diubah).
 let cronFingerprint = null;
 setInterval(async () => {
   try {
-    const [rows] = await db.query(
-      'SELECT COUNT(*) AS n, COALESCE(SUM(id), 0) AS ids, MAX(updated_at) AS updated FROM cronjobs WHERE active = 1'
-    );
-    const fp = `${rows[0].n}|${rows[0].ids}|${rows[0].updated ? new Date(rows[0].updated).getTime() : 0}`;
+    const [rows] = await db.query(`
+      SELECT COUNT(*) AS n,
+             COALESCE(SUM(CRC32(CONCAT_WS('|', id, url, schedule, name, COALESCE(save_logs, 0)))), 0) AS crc
+      FROM cronjobs WHERE active = 1
+    `);
+    const fp = `${rows[0].n}|${rows[0].crc}`;
     if (cronFingerprint !== null && fp !== cronFingerprint) {
       console.log('✅ Perubahan cronjob terdeteksi, memuat ulang daftar job...');
       await loadCronJobs();
