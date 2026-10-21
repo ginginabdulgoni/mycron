@@ -23,8 +23,98 @@ process.env.TZ = 'UTC';
 let appTimezone = 'UTC';
 let timezoneFallbackWarned = false;
 
-// Concurrency limiter for per-minute jobs
-const minuteLimit = pLimit(20); // Max 20 concurrent jobs for per-minute schedules
+// Concurrency & Priority Queue untuk eksekusi cronjob
+// Mengutamakan cronjob yang belum pernah tereksekusi (last_run_at IS NULL),
+// kemudian cronjob yang paling lama belum jalan (oldest last_run_at).
+const MAX_CONCURRENCY = parseInt(process.env.CRON_CONCURRENCY || '25', 10);
+let activeWorkers = 0;
+const pendingQueue = [];
+const queuedJobIds = new Set();
+
+function parseLastRunMs(val) {
+  if (!val) return 0;
+  if (val instanceof Date) return val.getTime() || 0;
+  const iso = String(val).includes('T') ? String(val) : String(val).replace(' ', 'T') + 'Z';
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+// Estimasi interval jadwal cron (dalam milidetik) untuk deteksi job yang terlambat/stuck
+function getExpectedIntervalMs(schedule) {
+  const parts = String(schedule || '* * * * *').trim().split(/\s+/);
+  if (parts.length < 5) return 60 * 1000;
+  const [min, hour, dom, month, dow] = parts;
+
+  if (min.startsWith('*/')) {
+    const n = parseInt(min.slice(2), 10) || 1;
+    return n * 60 * 1000;
+  }
+  if (hour.startsWith('*/')) {
+    const n = parseInt(hour.slice(2), 10) || 1;
+    return n * 60 * 60 * 1000;
+  }
+  if (dom.startsWith('*/')) {
+    const n = parseInt(dom.slice(2), 10) || 1;
+    return n * 24 * 60 * 60 * 1000;
+  }
+  if (dow !== '*') {
+    return 7 * 24 * 60 * 60 * 1000;
+  }
+  if (dom !== '*') {
+    return 30 * 24 * 60 * 60 * 1000;
+  }
+  if (hour !== '*') {
+    return 24 * 60 * 60 * 1000;
+  }
+  if (min !== '*') {
+    return 60 * 60 * 1000;
+  }
+  return 60 * 1000;
+}
+
+function drainPriorityQueue() {
+  while (activeWorkers < MAX_CONCURRENCY && pendingQueue.length > 0) {
+    // Urutkan antrean:
+    // 1. Belum pernah tereksekusi (lastRunAtMs === 0) selalu paling depan
+    // 2. Yang paling lama belum dieksekusi (lastRunAtMs terkecil) berikutnya
+    pendingQueue.sort((a, b) => {
+      const aNever = a.getLastRunMs() === 0 ? 0 : 1;
+      const bNever = b.getLastRunMs() === 0 ? 0 : 1;
+      if (aNever !== bNever) return aNever - bNever;
+      return a.getLastRunMs() - b.getLastRunMs();
+    });
+
+    const nextItem = pendingQueue.shift();
+    if (!nextItem) break;
+
+    queuedJobIds.delete(nextItem.jobId);
+    activeWorkers++;
+
+    Promise.resolve()
+      .then(() => nextItem.run())
+      .catch(err => {
+        console.error(`❌ Queue execution error for job #${nextItem.jobId}:`, err.message);
+      })
+      .finally(() => {
+        activeWorkers--;
+        drainPriorityQueue();
+      });
+  }
+}
+
+function enqueueJobExecution(jobId, getLastRunMs, runFn) {
+  const key = String(jobId);
+  if (queuedJobIds.has(key)) {
+    return;
+  }
+  queuedJobIds.add(key);
+  pendingQueue.push({
+    jobId: key,
+    getLastRunMs,
+    run: runFn,
+  });
+  drainPriorityQueue();
+}
 
 // DNS cache untuk request job.
 // dns.lookup() default memakai threadpool libuv (4 thread) + resolv.conf glibc. Saat
@@ -384,17 +474,23 @@ function jobSignature(job) {
 }
 
 async function loadCronJobs() {
- const [rows] = await db.query(`
-  SELECT * FROM cronjobs 
-  WHERE active = 1
-  ORDER BY (last_run_at IS NULL) DESC, RAND()
-`);
-
+  const [rows] = await db.query(`
+    SELECT * FROM cronjobs 
+    WHERE active = 1
+    ORDER BY (last_run_at IS NULL) DESC, last_run_at ASC
+  `);
 
   for (const job of rows) {
     const existing = scheduledTasks[job.id];
 
     if (existing) {
+      // Sinkronkan lastRunAtMs dari DB bila DB punya nilai lebih baru
+      const dbMs = parseLastRunMs(job.last_run_at);
+      if (dbMs > existing.lastRunAtMs) {
+        existing.lastRunAtMs = dbMs;
+      }
+      existing.job = job;
+
       if (existing.signature !== jobSignature(job)) {
         console.log(`🔁 Rescheduling ${job.name}`);
         existing.task.stop();
@@ -402,6 +498,18 @@ async function loadCronJobs() {
       }
     } else {
       scheduleCron(job);
+    }
+
+    // Utamakan eksekusi langsung untuk job yang belum pernah jalan (last_run_at IS NULL)
+    // atau job yang sudah terlambat jauh dari jadwal seharusnya (stuck/overdue)
+    const entry = scheduledTasks[job.id];
+    if (entry) {
+      const intervalMs = getExpectedIntervalMs(job.schedule);
+      const isNeverRun = entry.lastRunAtMs === 0;
+      const isOverdue = !isNeverRun && (Date.now() - entry.lastRunAtMs) > (intervalMs * 1.5 + 60000);
+      if (isNeverRun || isOverdue) {
+        triggerJobExecution(job.id);
+      }
     }
   }
 
@@ -415,95 +523,152 @@ async function loadCronJobs() {
   });
 }
 
-function scheduleCron(job) {
-  const task = cron.schedule(job.schedule, async () => {
-    const lockKey = String(job.id);
-    if (runningJobs.has(lockKey)) {
-      console.log(`Skipping overlap: ${job.name}`);
-      return;
-    }
-    runningJobs.add(lockKey);
+function triggerJobExecution(jobId) {
+  const lockKey = String(jobId);
+  const entry = scheduledTasks[jobId];
+  if (!entry) return;
 
-    try {
-      const currentTime = new Intl.DateTimeFormat('id-ID', {
-      timeZone: process.env.TZ,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    }).format(new Date());
+  if (runningJobs.has(lockKey) || queuedJobIds.has(lockKey)) {
+    console.log(`Skipping overlap: ${entry.job.name}`);
+    return;
+  }
 
-    console.log(`[⏱ ${currentTime}] Running: ${job.name}`);
+  enqueueJobExecution(
+    lockKey,
+    () => scheduledTasks[jobId]?.lastRunAtMs ?? 0,
+    async () => {
+      const currentEntry = scheduledTasks[jobId];
+      if (!currentEntry) return;
+      const job = currentEntry.job;
 
-    // Execute job with concurrency control for per-minute schedules
-    const executeJob = async () => {
-      const utcNow = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      if (runningJobs.has(lockKey)) return;
+      runningJobs.add(lockKey);
+
       try {
-        // Add timeout to axios request (30 seconds)
-        const res = await axios.get(job.url, {
-          timeout: 15000,
-          httpAgent: jobHttpAgent,
-          httpsAgent: jobHttpsAgent,
-          maxRedirects: 5,
-          validateStatus: function (status) {
-            return status >= 200 && status < 500; // Accept 2xx, 3xx, 4xx
-          }
-        });
+        const currentTime = new Intl.DateTimeFormat('id-ID', {
+          timeZone: process.env.TZ,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        }).format(new Date());
 
-        // Update last_run_at in DB (using UTC)
-        await db.query(
-          'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
-          [utcNow, job.id]
-        );
+        console.log(`[⏱ ${currentTime}] Running: ${job.name}`);
 
-        if (job.save_logs) {
-          await db.query(
-            'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
-            [job.id, 'success', res.status, JSON.stringify(res.data).substring(0, 10000), utcNow]
-          );
-        }
-      } catch (err) {
-        console.error(`❌ Error executing ${job.name}:`, err.message);
+        const nowMs = Date.now();
+        const utcNow = new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ');
+        const controller = new AbortController();
+        const abortTimer = setTimeout(() => controller.abort(), 16000);
 
-        // Update last_run_at even on error so the UI reflects the latest attempt
         try {
+          const res = await axios.get(job.url, {
+            timeout: 15000,
+            signal: controller.signal,
+            httpAgent: jobHttpAgent,
+            httpsAgent: jobHttpsAgent,
+            maxRedirects: 5,
+            validateStatus: function (status) {
+              return status >= 200 && status < 500;
+            }
+          });
+
+          currentEntry.lastRunAtMs = nowMs;
+
           await db.query(
             'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
             [utcNow, job.id]
           );
-        } catch (updateErr) {
-          console.error(`❌ Failed to update last_run_at for ${job.name}:`, updateErr.message);
-        }
 
-        if (job.save_logs) {
-          await db.query(
-            'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
-            [job.id, 'error', err.message, err.response ? JSON.stringify(err.response.data).substring(0, 10000) : null, utcNow]
-          );
-        }
-      }
-    };
+          if (job.save_logs) {
+            await db.query(
+              'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
+              [job.id, 'success', res.status, JSON.stringify(res.data).substring(0, 10000), utcNow]
+            );
+          }
+        } catch (err) {
+          console.error(`❌ Error executing ${job.name}:`, err.message);
+          currentEntry.lastRunAtMs = nowMs;
 
-    // Use concurrency limiter for per-minute jobs
-      if (job.schedule === '* * * * *' || job.schedule === '*/1 * * * *') {
-        await minuteLimit(executeJob);
-      } else {
-        await executeJob();
+          try {
+            await db.query(
+              'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
+              [utcNow, job.id]
+            );
+          } catch (updateErr) {
+            console.error(`❌ Failed to update last_run_at for ${job.name}:`, updateErr.message);
+          }
+
+          if (job.save_logs) {
+            await db.query(
+              'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
+              [job.id, 'error', err.message, err.response ? JSON.stringify(err.response.data).substring(0, 10000) : null, utcNow]
+            );
+          }
+        } finally {
+          clearTimeout(abortTimer);
+        }
+      } finally {
+        runningJobs.delete(lockKey);
       }
-    } finally {
-      runningJobs.delete(lockKey);
     }
+  );
+}
+
+function scheduleCron(job) {
+  if (!cron.validate(job.schedule)) {
+    console.error(`❌ Invalid cron schedule for ${job.name}: "${job.schedule}"`);
+    return;
+  }
+
+  const task = cron.schedule(job.schedule, () => {
+    triggerJobExecution(job.id);
   });
 
   scheduledTasks[job.id] = {
     task,
+    job,
     schedule: job.schedule,
-    signature: jobSignature(job)
+    signature: jobSignature(job),
+    lastRunAtMs: parseLastRunMs(job.last_run_at)
   };
 
   console.log(`✅ Scheduled: ${job.name} [${job.schedule}]`);
+}
+
+// Watchdog: setiap 60 detik pastikan cronjob yang belum pernah dieksekusi (last_run_at IS NULL)
+// atau yang stuck/terlambat langsung masuk antrean prioritas tertinggi.
+async function sweepUnexecutedAndOverdueJobs() {
+  try {
+    const [rows] = await db.query(`
+      SELECT id, schedule, last_run_at
+      FROM cronjobs
+      WHERE active = 1
+      ORDER BY (last_run_at IS NULL) DESC, last_run_at ASC
+    `);
+
+    const now = Date.now();
+    for (const row of rows) {
+      const entry = scheduledTasks[row.id];
+      if (!entry) continue;
+
+      const dbMs = parseLastRunMs(row.last_run_at);
+      if (dbMs > entry.lastRunAtMs) {
+        entry.lastRunAtMs = dbMs;
+      }
+
+      const intervalMs = getExpectedIntervalMs(row.schedule);
+      const isNeverRun = entry.lastRunAtMs === 0;
+      const isOverdue = !isNeverRun && (now - entry.lastRunAtMs) > (intervalMs * 1.5 + 60000);
+
+      if (isNeverRun || isOverdue) {
+        triggerJobExecution(row.id);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Sweep unexecuted/overdue jobs error:', err.message);
+  }
 }
 
 
@@ -540,6 +705,12 @@ setInterval(async () => {
     console.error('❌ Cek perubahan cronjob gagal:', err.message);
   }
 }, 15000);
+
+// Watchdog tiap 60 detik: pastikan cronjob yang belum pernah dieksekusi (last_run_at IS NULL)
+// atau yang stuck/terlambat langsung diprioritaskan untuk jalan
+setInterval(async () => {
+  await sweepUnexecutedAndOverdueJobs();
+}, 60000);
 
 // Reload penuh tiap jam sebagai jaring pengaman + clear logs
 setInterval(async () => {

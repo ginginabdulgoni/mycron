@@ -57,6 +57,7 @@ class CronjobController extends Controller
         // Get RTO domains
         $rtoDomains = \App\Models\RtoDomain::pluck('domain')->toArray();
         $timezone = setting('timezone', config('app.timezone', 'UTC'));
+        $nowUtc = Carbon::now('UTC');
 
         // Format data
         $data = [];
@@ -73,6 +74,20 @@ class CronjobController extends Controller
             // Check if domain is in RTO list
             $isRto = $domain && in_array($domain, $rtoDomains);
 
+            // Deteksi apakah cronjob belum tereksekusi atau stuck (terlambat)
+            $healthStatus = 'healthy';
+            if (!$cron->active) {
+                $healthStatus = 'inactive';
+            } elseif (empty($cron->last_run_at)) {
+                $healthStatus = 'unexecuted';
+            } else {
+                $expectedMins = Cronjob::expectedIntervalMinutes($cron->schedule);
+                $minsSince = max(0, (int) Carbon::parse($cron->last_run_at, 'UTC')->diffInMinutes($nowUtc, false));
+                if ($minsSince > max($expectedMins * 2, $expectedMins + 3)) {
+                    $healthStatus = 'stuck';
+                }
+            }
+
             $data[] = [
                 'id' => $cron->id,
                 'name' => $cron->name,
@@ -84,6 +99,7 @@ class CronjobController extends Controller
                 'active' => $cron->active ? 'Aktif' : 'Nonaktif',
                 'save_logs' => $cron->save_logs ? 'Aktif' : 'Nonaktif',
                 'is_rto' => $isRto,
+                'health_status' => $healthStatus,
                 'domain' => $domain
             ];
         }
@@ -168,5 +184,54 @@ class CronjobController extends Controller
             'status' => 'success',
             'message' => "$deleted cronjob berhasil dihapus."
         ]);
+    }
+
+    /**
+     * Eksekusi cronjob secara manual (langsung) dari Dashboard / halaman Cronjob.
+     */
+    public function runNow($id)
+    {
+        $cron = Cronjob::findOrFail($id);
+        $utcNow = Carbon::now('UTC')->format('Y-m-d H:i:s');
+
+        try {
+            $response = \Illuminate\Support\Facades\Http::timeout(15)
+                ->withoutVerifying()
+                ->get($cron->url);
+
+            $cron->update(['last_run_at' => $utcNow]);
+
+            if ($cron->save_logs) {
+                \App\Models\CronLog::create([
+                    'cronjob_id' => $cron->id,
+                    'status' => $response->successful() ? 'success' : 'error',
+                    'response' => (string) $response->status(),
+                    'response_body' => mb_substr($response->body(), 0, 10000),
+                    'run_at' => $utcNow,
+                ]);
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => "Cronjob \"{$cron->name}\" berhasil dieksekusi (HTTP {$response->status()}).",
+            ]);
+        } catch (\Throwable $e) {
+            $cron->update(['last_run_at' => $utcNow]);
+
+            if ($cron->save_logs) {
+                \App\Models\CronLog::create([
+                    'cronjob_id' => $cron->id,
+                    'status' => 'error',
+                    'response' => mb_substr($e->getMessage(), 0, 250),
+                    'response_body' => null,
+                    'run_at' => $utcNow,
+                ]);
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Gagal mengeksekusi URL: ' . $e->getMessage(),
+            ], 422);
+        }
     }
 }

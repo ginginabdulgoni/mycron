@@ -1,82 +1,119 @@
-<head>
-
-    <meta name="csrf-token" content="{{ csrf_token() }}">
-
-</head>
-
 @extends('layouts.app')
 @section('title', 'Manajemen User')
 @section('content')
-    <h2 class="mb-4">Manajemen User</h2>
-    <button class="btn btn-primary mb-3" onclick="openCreateModal()">+ Tambah User</button>
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Manajemen User</h1>
+            <p class="page-subtitle">Kelola akun pengguna dan hak akses administrator pada sistem MyCron</p>
+        </div>
+        <button class="btn btn-primary d-inline-flex align-items-center gap-1" onclick="openCreateModal()">
+            <i class="bi bi-person-plus-fill"></i>
+            <span>Tambah User</span>
+        </button>
+    </div>
 
-    <table class="table table-bordered">
-        <thead>
-            <tr>
-                <th>Nama</th>
-                <th>Email</th>
-                <th>Role</th>
-                <th>Dibuat</th>
-                <th>Aksi</th>
-            </tr>
-        </thead>
-        <tbody id="userTable">
-            @foreach ($users as $user)
-                <tr id="row-{{ $user->id }}">
-                    <td>{{ $user->name }}</td>
-                    <td>{{ $user->email }}</td>
-                    <td>{{ $user->role }}</td>
-                    <td>{{ $user->created_at->format('Y-m-d H:i') }}</td>
-                    <td>
-                        <button class="btn btn-sm btn-warning" onclick="editUser({{ $user->id }})">Edit</button>
-                        @if ($user->id !== auth()->id())
-                            <button class="btn btn-sm btn-danger" onclick="deleteUser({{ $user->id }})">Hapus</button>
-                        @endif
-                    </td>
-                </tr>
-            @endforeach
-        </tbody>
-    </table>
+    <div class="card-modern overflow-hidden">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Pengguna</th>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Terdaftar</th>
+                        <th class="text-end">Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="userTable">
+                    @foreach ($users as $user)
+                        <tr id="row-{{ $user->id }}">
+                            <td>
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="user-avatar" style="width: 34px; height: 34px;">
+                                        {{ substr($user->name, 0, 1) }}
+                                    </span>
+                                    <div>
+                                        <div class="fw-semibold text-dark">{{ $user->name }}</div>
+                                        @if ($user->id === auth()->id())
+                                            <span class="text-muted" style="font-size: 0.72rem;">Akun Anda</span>
+                                        @endif
+                                    </div>
+                                </div>
+                            </td>
+                            <td class="text-muted">{{ $user->email }}</td>
+                            <td>
+                                @if ($user->role === 'admin')
+                                    <span class="badge-soft-primary text-uppercase"><i class="bi bi-shield-lock-fill"></i> Admin</span>
+                                @else
+                                    <span class="badge-soft-secondary text-uppercase"><i class="bi bi-person"></i> User</span>
+                                @endif
+                            </td>
+                            <td class="text-muted small">{{ $user->created_at->format('d-m-Y H:i') }}</td>
+                            <td class="text-end">
+                                <div class="d-inline-flex gap-1">
+                                    <button class="btn btn-sm btn-light border text-primary" onclick="editUser({{ $user->id }})">
+                                        <i class="bi bi-pencil-square"></i> Edit
+                                    </button>
+                                    @if ($user->id !== auth()->id())
+                                        <button class="btn btn-sm btn-light border text-danger" onclick="deleteUser({{ $user->id }})" title="Hapus">
+                                            <i class="bi bi-trash3"></i>
+                                        </button>
+                                    @endif
+                                </div>
+                            </td>
+                        </tr>
+                    @endforeach
+                </tbody>
+            </table>
+        </div>
+    </div>
 
     <!-- Modal Form User -->
-    <div class="modal fade" id="userModal" tabindex="-1">
-        <div class="modal-dialog">
-            <form id="userForm">
+    <div class="modal fade" id="userModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <form id="userForm" class="w-100">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">Form User</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title d-flex align-items-center gap-2">
+                            <i class="bi bi-person-gear text-primary"></i>
+                            <span>Form Pengguna</span>
+                        </h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
                         <input type="hidden" name="id" id="user_id">
-                        <div class="mb-2">
-                            <label>Nama</label>
-                            <input type="text" class="form-control" name="name" id="name" required>
+                        <div class="mb-3">
+                            <label class="form-label" for="name">Nama Lengkap</label>
+                            <input type="text" class="form-control" name="name" id="name" placeholder="Nama lengkap" required>
                         </div>
-                        <div class="mb-2">
-                            <label>Email</label>
-                            <input type="email" class="form-control" name="email" id="email" required>
+                        <div class="mb-3">
+                            <label class="form-label" for="email">Alamat Email</label>
+                            <input type="email" class="form-control" name="email" id="email" placeholder="nama@email.com" required>
                         </div>
-                        <div class="mb-2">
-                            <label>Password <small class="text-muted" id="password-hint"></small></label>
-                            <input type="password" class="form-control" name="password" id="password">
+                        <div class="mb-3">
+                            <label class="form-label" for="password">
+                                Password <small class="text-muted fw-normal" id="password-hint"></small>
+                            </label>
+                            <input type="password" class="form-control" name="password" id="password" placeholder="Minimal 6 karakter">
                         </div>
-                        <div class="mb-2">
-                            <label>Role</label>
-                            <select class="form-control" name="role" id="role" required>
-                                <option value="user">User</option>
-                                <option value="admin">Admin</option>
+                        <div class="mb-0">
+                            <label class="form-label" for="role">Hak Akses (Role)</label>
+                            <select class="form-select" name="role" id="role" required>
+                                <option value="user">User Standar</option>
+                                <option value="admin">Administrator</option>
                             </select>
                         </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="submit" class="btn btn-primary">Simpan</button>
+                        <button type="button" class="btn btn-light border" data-bs-dismiss="modal">Batal</button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check2-circle me-1"></i>Simpan User
+                        </button>
                     </div>
                 </div>
             </form>
         </div>
     </div>
-
 
     <script>
         $.ajaxSetup({

@@ -48,6 +48,7 @@ Route::middleware('auth')->group(function () {
     Route::get('/cronjobs/data', [CronjobController::class, 'getData'])->name('cronjobs.data');
     Route::post('/cronjobs/store', [CronjobController::class, 'store'])->name('cronjobs.store');
     Route::post('/cronjobs/update/{id}', [CronjobController::class, 'update'])->name('cronjobs.update');
+    Route::post('/cronjobs/run-now/{id}', [CronjobController::class, 'runNow'])->name('cronjobs.run-now');
 
     Route::get('/cronjobs/edit/{id}', [CronjobController::class, 'edit'])->name('cronjobs.edit');
 
