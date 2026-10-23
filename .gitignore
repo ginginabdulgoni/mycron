@@ -31,3 +31,16 @@ yarn-error.log*
 laravel/composer.lock
 node-worker/package-lock.json
 node-worker/yarn.lock
+
+# Catatan akses server (rahasia)
+server.md
+
+# Laravel runtime files
+laravel/storage/logs/*
+!laravel/storage/logs/.gitignore
+laravel/storage/framework/cache/*
+!laravel/storage/framework/cache/.gitignore
+laravel/storage/framework/sessions/*
+!laravel/storage/framework/sessions/.gitignore
+laravel/storage/framework/views/*
+!laravel/storage/framework/views/.gitignore

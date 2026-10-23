@@ -25,11 +25,22 @@ let timezoneFallbackWarned = false;
 
 // Concurrency & Priority Queue untuk eksekusi cronjob
 // Mengutamakan cronjob yang belum pernah tereksekusi (last_run_at IS NULL),
-// kemudian cronjob yang paling lama belum jalan (oldest last_run_at).
-const MAX_CONCURRENCY = parseInt(process.env.CRON_CONCURRENCY || '25', 10);
+// kemudian cronjob yang paling lama belum jalan (oldest last_run_at, misal dari tgl 18).
+const MAX_CONCURRENCY = parseInt(process.env.CRON_CONCURRENCY || '100', 10);
+const JOB_HTTP_TIMEOUT_MS = parseInt(process.env.CRON_HTTP_TIMEOUT_MS || '10000', 10);
+const JOB_HARD_TIMEOUT_MS = JOB_HTTP_TIMEOUT_MS + 3000;
+
 let activeWorkers = 0;
 const pendingQueue = [];
 const queuedJobIds = new Set();
+
+function withHardTimeout(promise, ms, label = 'Operation timeout') {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} (${ms}ms)`)), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
 
 function parseLastRunMs(val) {
   if (!val) return 0;
@@ -76,7 +87,7 @@ function drainPriorityQueue() {
   while (activeWorkers < MAX_CONCURRENCY && pendingQueue.length > 0) {
     // Urutkan antrean:
     // 1. Belum pernah tereksekusi (lastRunAtMs === 0) selalu paling depan
-    // 2. Yang paling lama belum dieksekusi (lastRunAtMs terkecil) berikutnya
+    // 2. Yang paling lama belum dieksekusi (lastRunAtMs terkecil, misal tgl 18) berikutnya
     pendingQueue.sort((a, b) => {
       const aNever = a.getLastRunMs() === 0 ? 0 : 1;
       const bNever = b.getLastRunMs() === 0 ? 0 : 1;
@@ -90,8 +101,12 @@ function drainPriorityQueue() {
     queuedJobIds.delete(nextItem.jobId);
     activeWorkers++;
 
-    Promise.resolve()
-      .then(() => nextItem.run())
+    // Hard timeout di level worker slot agar TIDAK ADA slot yang bisa nyangkut selamanya
+    withHardTimeout(
+      Promise.resolve().then(() => nextItem.run()),
+      JOB_HARD_TIMEOUT_MS + 5000,
+      `Worker slot hard timeout for job #${nextItem.jobId}`
+    )
       .catch(err => {
         console.error(`❌ Queue execution error for job #${nextItem.jobId}:`, err.message);
       })
@@ -117,10 +132,6 @@ function enqueueJobExecution(jobId, getLastRunMs, runFn) {
 }
 
 // DNS cache untuk request job.
-// dns.lookup() default memakai threadpool libuv (4 thread) + resolv.conf glibc. Saat
-// nameserver pertama sering timeout, ribuan lookup antre di 4 thread itu dan SEMUA job
-// kena "timeout of 15000ms exceeded" tanpa pernah membuka koneksi TCP.
-// Di sini pakai c-ares (dns.Resolver, async, tidak memakai threadpool) + cache per host.
 const DNS_TTL_MS = 5 * 60 * 1000;
 const DNS_NEGATIVE_TTL_MS = 60 * 1000;
 const dnsCache = new Map(); // host -> { address, family, error, expires }
@@ -140,21 +151,35 @@ async function resolveHost(hostname) {
 
   const p = (async () => {
     try {
-      const addrs = await resolver.resolve4(hostname);
+      const addrs = await withHardTimeout(
+        resolver.resolve4(hostname),
+        3500,
+        `DNS resolve4 timeout for ${hostname}`
+      );
       const entry = { address: addrs[0], family: 4, expires: Date.now() + DNS_TTL_MS };
       dnsCache.set(hostname, entry);
       return entry;
     } catch (err) {
-      // Fallback ke resolver sistem (mis. /etc/hosts atau host lokal)
-      try {
-        const r = await dns.promises.lookup(hostname, { family: 4 });
-        const entry = { address: r.address, family: 4, expires: Date.now() + DNS_TTL_MS };
-        dnsCache.set(hostname, entry);
-        return entry;
-      } catch (lookupErr) {
-        dnsCache.set(hostname, { error: lookupErr, expires: Date.now() + DNS_NEGATIVE_TTL_MS });
-        throw lookupErr;
+      // Hanya fallback ke dns.promises.lookup untuk host lokal (tanpa titik / .local / .localhost)
+      // supaya domain publik yang mati tidak mengantre di getaddrinfo glibc yang lambat.
+      const isLocalHost = !hostname.includes('.') || hostname.endsWith('.local') || hostname.endsWith('.localhost');
+      if (isLocalHost) {
+        try {
+          const r = await withHardTimeout(
+            dns.promises.lookup(hostname, { family: 4 }),
+            2000,
+            `DNS lookup timeout for ${hostname}`
+          );
+          const entry = { address: r.address, family: 4, expires: Date.now() + DNS_TTL_MS };
+          dnsCache.set(hostname, entry);
+          return entry;
+        } catch (lookupErr) {
+          dnsCache.set(hostname, { error: lookupErr, expires: Date.now() + DNS_NEGATIVE_TTL_MS });
+          throw lookupErr;
+        }
       }
+      dnsCache.set(hostname, { error: err, expires: Date.now() + DNS_NEGATIVE_TTL_MS });
+      throw err;
     } finally {
       dnsInflight.delete(hostname);
     }
@@ -176,8 +201,19 @@ function cachedLookup(hostname, options, callback) {
     .catch(err => callback(err));
 }
 
-const jobHttpAgent = new http.Agent({ lookup: cachedLookup });
-const jobHttpsAgent = new https.Agent({ lookup: cachedLookup });
+const jobHttpAgent = new http.Agent({
+  lookup: cachedLookup,
+  keepAlive: true,
+  maxSockets: MAX_CONCURRENCY,
+  timeout: JOB_HTTP_TIMEOUT_MS
+});
+const jobHttpsAgent = new https.Agent({
+  lookup: cachedLookup,
+  keepAlive: true,
+  maxSockets: MAX_CONCURRENCY,
+  timeout: JOB_HTTP_TIMEOUT_MS,
+  rejectUnauthorized: false
+});
 
 async function setTimezoneFromDatabase() {
   try {
@@ -266,23 +302,25 @@ function extractDomain(url) {
 // Check if domain is reachable via HTTP HEAD request
 async function checkDomainHTTP(domain) {
   try {
-    // Try both HTTP and HTTPS
     const protocols = ['https://', 'http://'];
 
     for (const protocol of protocols) {
       try {
-        const response = await axios.head(`${protocol}${domain}`, {
-          timeout: 3000,
-          httpAgent: jobHttpAgent,
-          httpsAgent: jobHttpsAgent,
-          maxRedirects: 3,
-          validateStatus: function (status) {
-            return status < 500; // Accept anything except 5xx errors
-          }
-        });
-        return true; // Domain is reachable
+        await withHardTimeout(
+          axios.head(`${protocol}${domain}`, {
+            timeout: 3000,
+            httpAgent: jobHttpAgent,
+            httpsAgent: jobHttpsAgent,
+            maxRedirects: 3,
+            validateStatus: function (status) {
+              return status < 500;
+            }
+          }),
+          4000,
+          'HTTP HEAD timeout'
+        );
+        return true;
       } catch (err) {
-        // Try next protocol
         continue;
       }
     }
@@ -295,41 +333,41 @@ async function checkDomainHTTP(domain) {
 // Ping domain to check if it's reachable
 async function pingDomain(domain) {
   try {
-    // First try ICMP ping
-    const res = await ping.promise.probe(domain, {
-      timeout: 2,
-      extra: ['-c', '2']
-    });
+    const res = await withHardTimeout(
+      ping.promise.probe(domain, {
+        timeout: 2,
+        extra: ['-c', '1']
+      }),
+      3500,
+      'ICMP ping timeout'
+    );
 
     if (res.alive) {
       return true;
     }
 
-    // If ping fails, try HTTP HEAD request (for same-server domains)
-    console.log(`⚠️ Ping failed for ${domain}, trying HTTP check...`);
     const httpAlive = await checkDomainHTTP(domain);
-
     if (httpAlive) {
-      console.log(`✅ ${domain} is reachable via HTTP (same-server/local domain)`);
       return true;
     }
 
     return false;
   } catch (err) {
-    console.error(`❌ Ping error for ${domain}:`, err.message);
-
-    // Last attempt: try HTTP check
     return await checkDomainHTTP(domain);
   }
 }
 
-// Check and update RTO domains
+let rtoCheckRunning = false;
+const rtoCheckLimit = pLimit(10);
+
+// Check and update RTO domains (non-blocking, parallel 10 domains at a time)
 async function checkAndUpdateRTODomains() {
+  if (rtoCheckRunning) return;
+  rtoCheckRunning = true;
   try {
-    await setTimezoneFromDatabase(); // Refresh timezone so last_checked_at uses latest setting
+    await setTimezoneFromDatabase();
     console.log('🔍 Checking domain health...');
 
-    // Get excluded domains from settings
     const [excludedSettings] = await db.query(`
       SELECT value FROM settings WHERE \`key\` = 'rto_excluded_domains' LIMIT 1
     `);
@@ -338,11 +376,6 @@ async function checkAndUpdateRTODomains() {
       .map(d => d.trim().toLowerCase())
       .filter(d => d.length > 0);
 
-    if (excludedDomains.length > 0) {
-      console.log(`📝 Excluded domains: ${excludedDomains.join(', ')}`);
-    }
-
-    // Get all unique domains from active cronjobs
     const [jobs] = await db.query(`
       SELECT DISTINCT url FROM cronjobs WHERE active = 1
     `);
@@ -355,61 +388,53 @@ async function checkAndUpdateRTODomains() {
 
     console.log(`📊 Found ${domains.size} unique domains to check`);
 
-    for (const domain of domains) {
-      // Skip excluded domains
-      if (excludedDomains.includes(domain.toLowerCase())) {
-        console.log(`⏭️ Skipping excluded domain: ${domain}`);
-        // Remove from RTO if it was there
-        await db.query('DELETE FROM rto_domains WHERE domain = ?', [domain]);
-        continue;
-      }
+    await Promise.all(
+      Array.from(domains).map(domain =>
+        rtoCheckLimit(async () => {
+          if (excludedDomains.includes(domain.toLowerCase())) {
+            await db.query('DELETE FROM rto_domains WHERE domain = ?', [domain]);
+            return;
+          }
 
-      const isAlive = await pingDomain(domain);
+          const isAlive = await pingDomain(domain);
 
-      if (!isAlive) {
-        console.log(`❌ RTO detected: ${domain}`);
-
-        // Check if domain already exists in rto_domains
-        const [existing] = await db.query(
-          'SELECT id, rto_count FROM rto_domains WHERE domain = ?',
-          [domain]
-        );
-
-        if (existing.length > 0) {
-          // Update existing record
-          await withTimezoneConnection((connection) =>
-            connection.query(
-              'UPDATE rto_domains SET rto_count = rto_count + 1, last_checked_at = NOW(), updated_at = NOW() WHERE domain = ?',
+          if (!isAlive) {
+            const [existing] = await db.query(
+              'SELECT id, rto_count FROM rto_domains WHERE domain = ?',
               [domain]
-            )
-          );
-          console.log(`📝 Updated RTO count for ${domain}`);
-        } else {
-          // Insert new record
-          await withTimezoneConnection((connection) =>
-            connection.query(
-              'INSERT INTO rto_domains (domain, rto_count, first_detected_at, last_checked_at, created_at, updated_at) VALUES (?, 1, NOW(), NOW(), NOW(), NOW())',
-              [domain]
-            )
-          );
-          console.log(`✅ Added ${domain} to RTO domains`);
-        }
-      } else {
-        console.log(`✅ ${domain} is alive`);
+            );
 
-        // Remove from RTO if it was there (domain recovered)
-        await db.query('DELETE FROM rto_domains WHERE domain = ?', [domain]);
-      }
-    }
+            if (existing.length > 0) {
+              await withTimezoneConnection((connection) =>
+                connection.query(
+                  'UPDATE rto_domains SET rto_count = rto_count + 1, last_checked_at = NOW(), updated_at = NOW() WHERE domain = ?',
+                  [domain]
+                )
+              );
+            } else {
+              await withTimezoneConnection((connection) =>
+                connection.query(
+                  'INSERT INTO rto_domains (domain, rto_count, first_detected_at, last_checked_at, created_at, updated_at) VALUES (?, 1, NOW(), NOW(), NOW(), NOW())',
+                  [domain]
+                )
+              );
+            }
+          } else {
+            await db.query('DELETE FROM rto_domains WHERE domain = ?', [domain]);
+          }
+        })
+      )
+    );
   } catch (err) {
     console.error('❌ Error checking RTO domains:', err.message);
+  } finally {
+    rtoCheckRunning = false;
   }
 }
 
 // Auto-delete cronjobs for RTO domains that exceed the age limit
 async function autoDeleteRTOCronjobs() {
   try {
-    // Check if auto-delete is enabled
     const [settings] = await db.query(`
       SELECT
         MAX(CASE WHEN \`key\` = 'auto_delete_rto_active' THEN value ELSE NULL END) AS active,
@@ -421,13 +446,9 @@ async function autoDeleteRTOCronjobs() {
     const days = parseInt(settings[0]?.days || 3);
 
     if (!autoDeleteActive) {
-      console.log('🗑️ Auto-delete RTO cronjobs not active');
       return;
     }
 
-    console.log(`🗑️ Checking RTO domains older than ${days} days...`);
-
-    // Get RTO domains that are older than the specified days
     const [rtoDomains] = await db.query(`
       SELECT domain, DATEDIFF(NOW(), first_detected_at) as age_days
       FROM rto_domains
@@ -436,27 +457,18 @@ async function autoDeleteRTOCronjobs() {
     `, [days]);
 
     if (rtoDomains.length === 0) {
-      console.log('✅ No old RTO domains found');
       return;
     }
 
     let totalDeleted = 0;
 
     for (const rto of rtoDomains) {
-      console.log(`🗑️ Deleting cronjobs for domain: ${rto.domain} (${rto.age_days} days old)`);
-
-      // Delete all cronjobs for this domain
       const [result] = await db.query(
         'DELETE FROM cronjobs WHERE url LIKE ?',
         [`%${rto.domain}%`]
       );
-
       totalDeleted += result.affectedRows;
-
-      // Delete the RTO domain record
       await db.query('DELETE FROM rto_domains WHERE domain = ?', [rto.domain]);
-
-      console.log(`✅ Deleted ${result.affectedRows} cronjob(s) for ${rto.domain}`);
     }
 
     console.log(`🗑️ Total cronjobs deleted: ${totalDeleted}`);
@@ -468,7 +480,6 @@ async function autoDeleteRTOCronjobs() {
 const scheduledTasks = {};
 const runningJobs = new Set();
 
-// Tanda tangan job: kalau salah satu field ini berubah, job dijadwalkan ulang.
 function jobSignature(job) {
   return [job.schedule, job.url, job.name, job.save_logs ? 1 : 0].join('|');
 }
@@ -480,11 +491,12 @@ async function loadCronJobs() {
     ORDER BY (last_run_at IS NULL) DESC, last_run_at ASC
   `);
 
+  const now = Date.now();
+
   for (const job of rows) {
     const existing = scheduledTasks[job.id];
 
     if (existing) {
-      // Sinkronkan lastRunAtMs dari DB bila DB punya nilai lebih baru
       const dbMs = parseLastRunMs(job.last_run_at);
       if (dbMs > existing.lastRunAtMs) {
         existing.lastRunAtMs = dbMs;
@@ -493,20 +505,20 @@ async function loadCronJobs() {
 
       if (existing.signature !== jobSignature(job)) {
         console.log(`🔁 Rescheduling ${job.name}`);
-        existing.task.stop();
+        if (existing.task) existing.task.stop();
         scheduleCron(job);
       }
     } else {
       scheduleCron(job);
     }
 
-    // Utamakan eksekusi langsung untuk job yang belum pernah jalan (last_run_at IS NULL)
-    // atau job yang sudah terlambat jauh dari jadwal seharusnya (stuck/overdue)
+    // Langsung masukkan ke antrean prioritas bila belum pernah jalan (last_run_at IS NULL)
+    // atau sudah melewati batas jadwal seharusnya (misal nyangkut di tgl 18).
     const entry = scheduledTasks[job.id];
     if (entry) {
       const intervalMs = getExpectedIntervalMs(job.schedule);
       const isNeverRun = entry.lastRunAtMs === 0;
-      const isOverdue = !isNeverRun && (Date.now() - entry.lastRunAtMs) > (intervalMs * 1.5 + 60000);
+      const isOverdue = !isNeverRun && (now - entry.lastRunAtMs) > (intervalMs + 30000);
       if (isNeverRun || isOverdue) {
         triggerJobExecution(job.id);
       }
@@ -514,10 +526,11 @@ async function loadCronJobs() {
   }
 
   // Hapus yang tidak aktif lagi
+  const activeIds = new Set(rows.map(r => String(r.id)));
   Object.keys(scheduledTasks).forEach(id => {
-    if (!rows.find(j => j.id == id)) {
+    if (!activeIds.has(String(id))) {
       console.log(`⛔ Unscheduling job ID ${id}`);
-      scheduledTasks[id].task.stop();
+      if (scheduledTasks[id].task) scheduledTasks[id].task.stop();
       delete scheduledTasks[id];
     }
   });
@@ -529,7 +542,6 @@ function triggerJobExecution(jobId) {
   if (!entry) return;
 
   if (runningJobs.has(lockKey) || queuedJobIds.has(lockKey)) {
-    console.log(`Skipping overlap: ${entry.job.name}`);
     return;
   }
 
@@ -544,72 +556,75 @@ function triggerJobExecution(jobId) {
       if (runningJobs.has(lockKey)) return;
       runningJobs.add(lockKey);
 
+      const nowMs = Date.now();
+      const utcNow = new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ');
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), JOB_HTTP_TIMEOUT_MS + 500);
+
       try {
-        const currentTime = new Intl.DateTimeFormat('id-ID', {
-          timeZone: process.env.TZ,
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        }).format(new Date());
-
-        console.log(`[⏱ ${currentTime}] Running: ${job.name}`);
-
-        const nowMs = Date.now();
-        const utcNow = new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ');
-        const controller = new AbortController();
-        const abortTimer = setTimeout(() => controller.abort(), 16000);
-
-        try {
-          const res = await axios.get(job.url, {
-            timeout: 15000,
+        const res = await withHardTimeout(
+          axios.get(job.url, {
+            timeout: JOB_HTTP_TIMEOUT_MS,
             signal: controller.signal,
             httpAgent: jobHttpAgent,
             httpsAgent: jobHttpsAgent,
             maxRedirects: 5,
+            maxContentLength: 512 * 1024,
+            maxBodyLength: 512 * 1024,
             validateStatus: function (status) {
               return status >= 200 && status < 500;
             }
-          });
+          }),
+          JOB_HARD_TIMEOUT_MS,
+          `Request hard timeout (${job.url})`
+        );
 
-          currentEntry.lastRunAtMs = nowMs;
+        currentEntry.lastRunAtMs = Date.now();
 
+        await db.query(
+          'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
+          [utcNow, job.id]
+        );
+
+        if (job.save_logs) {
+          const bodyStr = typeof res.data === 'string'
+            ? res.data.substring(0, 10000)
+            : JSON.stringify(res.data ?? '').substring(0, 10000);
+          await db.query(
+            'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
+            [job.id, 'success', res.status, bodyStr, utcNow]
+          );
+        }
+      } catch (err) {
+        controller.abort();
+        console.error(`❌ Error executing ${job.name}:`, err.message);
+        currentEntry.lastRunAtMs = Date.now();
+
+        try {
           await db.query(
             'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
             [utcNow, job.id]
           );
+        } catch (updateErr) {
+          console.error(`❌ Failed to update last_run_at for ${job.name}:`, updateErr.message);
+        }
 
-          if (job.save_logs) {
-            await db.query(
-              'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
-              [job.id, 'success', res.status, JSON.stringify(res.data).substring(0, 10000), utcNow]
-            );
-          }
-        } catch (err) {
-          console.error(`❌ Error executing ${job.name}:`, err.message);
-          currentEntry.lastRunAtMs = nowMs;
-
+        if (job.save_logs) {
+          let errBody = null;
           try {
-            await db.query(
-              'UPDATE cronjobs SET last_run_at = ? WHERE id = ?',
-              [utcNow, job.id]
-            );
-          } catch (updateErr) {
-            console.error(`❌ Failed to update last_run_at for ${job.name}:`, updateErr.message);
-          }
-
-          if (job.save_logs) {
-            await db.query(
-              'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
-              [job.id, 'error', err.message, err.response ? JSON.stringify(err.response.data).substring(0, 10000) : null, utcNow]
-            );
-          }
-        } finally {
-          clearTimeout(abortTimer);
+            if (err.response && err.response.data !== undefined) {
+              errBody = typeof err.response.data === 'string'
+                ? err.response.data.substring(0, 10000)
+                : JSON.stringify(err.response.data).substring(0, 10000);
+            }
+          } catch (_) {}
+          await db.query(
+            'INSERT INTO cron_logs (cronjob_id, status, response, response_body, run_at) VALUES (?, ?, ?, ?, ?)',
+            [job.id, 'error', String(err.message || 'Error').substring(0, 250), errBody, utcNow]
+          ).catch(() => {});
         }
       } finally {
+        clearTimeout(abortTimer);
         runningJobs.delete(lockKey);
       }
     }
@@ -617,15 +632,17 @@ function triggerJobExecution(jobId) {
 }
 
 function scheduleCron(job) {
-  if (!cron.validate(job.schedule)) {
-    console.error(`❌ Invalid cron schedule for ${job.name}: "${job.schedule}"`);
-    return;
+  let task = null;
+  if (cron.validate(job.schedule)) {
+    task = cron.schedule(job.schedule, () => {
+      triggerJobExecution(job.id);
+    });
+  } else {
+    console.warn(`⚠️ Jadwal cron tidak standar untuk ${job.name} ("${job.schedule}"), tetap dijalankan via watchdog.`);
   }
 
-  const task = cron.schedule(job.schedule, () => {
-    triggerJobExecution(job.id);
-  });
-
+  // Tetap daftarkan di scheduledTasks walaupun format cron tidak standar,
+  // supaya watchdog tetap bisa mengeksekusi job yang belum jalan / terlambat!
   scheduledTasks[job.id] = {
     task,
     job,
@@ -633,12 +650,10 @@ function scheduleCron(job) {
     signature: jobSignature(job),
     lastRunAtMs: parseLastRunMs(job.last_run_at)
   };
-
-  console.log(`✅ Scheduled: ${job.name} [${job.schedule}]`);
 }
 
-// Watchdog: setiap 60 detik pastikan cronjob yang belum pernah dieksekusi (last_run_at IS NULL)
-// atau yang stuck/terlambat langsung masuk antrean prioritas tertinggi.
+// Watchdog tiap 15 detik: pastikan cronjob yang belum pernah dieksekusi (last_run_at IS NULL)
+// atau yang stuck/terlambat (mis. masih tgl 18) langsung masuk antrean prioritas tertinggi.
 async function sweepUnexecutedAndOverdueJobs() {
   try {
     const [rows] = await db.query(`
@@ -660,7 +675,7 @@ async function sweepUnexecutedAndOverdueJobs() {
 
       const intervalMs = getExpectedIntervalMs(row.schedule);
       const isNeverRun = entry.lastRunAtMs === 0;
-      const isOverdue = !isNeverRun && (now - entry.lastRunAtMs) > (intervalMs * 1.5 + 60000);
+      const isOverdue = !isNeverRun && (now - entry.lastRunAtMs) > (intervalMs + 30000);
 
       if (isNeverRun || isOverdue) {
         triggerJobExecution(row.id);
@@ -671,25 +686,26 @@ async function sweepUnexecutedAndOverdueJobs() {
   }
 }
 
-
 (async () => {
   console.log('🚀 Starting Cron Worker...');
-  await setTimezoneFromDatabase();     // 🔁 Ambil timezone dari DB
-  await loadCronJobs();                // ⏱️ Load cronjob
-  await clearOldLogsIfEnabled();       // 🧹 Jalankan clear logs jika aktif
-  await checkAndUpdateRTODomains();    // 🔍 Check domain health
-  await autoDeleteRTOCronjobs();       // 🗑️ Auto-delete old RTO cronjobs
-  console.log('✅ Cron Worker initialized successfully');
+  await setTimezoneFromDatabase();
+  await loadCronJobs();
+
+  // Nyalakan kontrol sistem (heartbeat + poll task update/restart/reload) SEGERA
+  // tanpa menunggu pengecekan ping domain RTO yang butuh waktu lama!
   await system.start({
     reloadCronJobs: loadCronJobs,
     jobCount: () => Object.keys(scheduledTasks).length,
   });
+  console.log('✅ Cron Worker initialized successfully');
+
+  // Jalankan pembersihan log dan pengecekan domain RTO di background (non-blocking)
+  clearOldLogsIfEnabled().catch(() => {});
+  checkAndUpdateRTODomains().catch(() => {});
+  autoDeleteRTOCronjobs().catch(() => {});
 })();
 
 // Deteksi cronjob baru/diubah/dihapus tanpa perlu restart worker.
-// Query ringan tiap 15 detik; daftar job hanya dimuat ulang bila sidik jarinya berubah.
-// Sidik jari dari ISI job (bukan updated_at: kolom itu diisi dengan zona waktu campuran
-// sehingga MAX(updated_at) tidak selalu bergeser saat satu job diubah).
 let cronFingerprint = null;
 setInterval(async () => {
   try {
@@ -709,11 +725,11 @@ setInterval(async () => {
   }
 }, 15000);
 
-// Watchdog tiap 60 detik: pastikan cronjob yang belum pernah dieksekusi (last_run_at IS NULL)
+// Watchdog tiap 15 detik: pastikan cronjob yang belum pernah dieksekusi (last_run_at IS NULL)
 // atau yang stuck/terlambat langsung diprioritaskan untuk jalan
-setInterval(async () => {
-  await sweepUnexecutedAndOverdueJobs();
-}, 60000);
+setInterval(() => {
+  sweepUnexecutedAndOverdueJobs();
+}, 15000);
 
 // Reload penuh tiap jam sebagai jaring pengaman + clear logs
 setInterval(async () => {
@@ -721,12 +737,12 @@ setInterval(async () => {
   await clearOldLogsIfEnabled();
 }, 3600000);
 
-// Check domain health every 10 minutes
-setInterval(async () => {
-  await checkAndUpdateRTODomains();
+// Check domain health every hour
+setInterval(() => {
+  checkAndUpdateRTODomains();
 }, 3600000);
 
 // Auto-delete RTO cronjobs every hour
-setInterval(async () => {
-  await autoDeleteRTOCronjobs();
+setInterval(() => {
+  autoDeleteRTOCronjobs();
 }, 3600000);
